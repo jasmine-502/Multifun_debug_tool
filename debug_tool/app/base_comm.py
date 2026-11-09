@@ -1,6 +1,7 @@
 import time
 from PySide6 import QtWidgets, QtCore, QtGui
 from app.theme import ModernTheme
+from app.log_view import apply_terminal_style
 
 
 class BaseCommTab(QtWidgets.QWidget):
@@ -14,13 +15,14 @@ class BaseCommTab(QtWidgets.QWidget):
         self.max_recv_lines = 2000
         self.highlight_pattern = ""
         self.highlight_color = "#ff4d4d"  # Default bright red
+        self.ui_theme = 'dark'
         self.sig_log_safe.connect(self._log_ui)
         self._build_base_ui()
 
     def _build_base_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(8, 4, 8, 8)
+        layout.setSpacing(12)
 
         self.top_group = QtWidgets.QGroupBox()
         self.top_group.setTitle('配置')
@@ -104,6 +106,8 @@ class BaseCommTab(QtWidgets.QWidget):
 
         self.recv_text = QtWidgets.QTextEdit()
         self.recv_text.setReadOnly(True)
+        # 接收区按 VS Code 输出面板配色（背景 #181d27 / 正文 #cccccc / 行距 22px）
+        apply_terminal_style(self.recv_text, self.ui_theme)
         right_group_layout.addWidget(self.recv_text)
         # 安装滚轮事件过滤器：向上滚动时自动关闭自动滚动
         try:
@@ -170,7 +174,18 @@ class BaseCommTab(QtWidgets.QWidget):
     def apply_fonts(self, send_font: QtGui.QFont, recv_font: QtGui.QFont):
         for row in self.send_rows:
             row['data_edit'].setFont(send_font)
-        self.recv_text.setFont(recv_font)
+        f = QtGui.QFont(recv_font)
+        f.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+        f.setFixedPitch(True)
+        self._recv_font = f
+        # 字体写进控件样式表才压得住全局 QSS，顺便重算行高
+        apply_terminal_style(self.recv_text, self.ui_theme, font=f)
+
+    def set_theme(self, theme: str):
+        """切主题时同步接收区配色（终端底色跟着深浅主题走）"""
+        self.ui_theme = theme
+        apply_terminal_style(self.recv_text, theme,
+                             font=getattr(self, '_recv_font', None))
 
     def _set_label_status(self, label: QtWidgets.QLabel, status: str):
         """
@@ -213,32 +228,30 @@ class BaseCommTab(QtWidgets.QWidget):
         # A simpler way: Use "Red" / "Green" that are visible on both, or
         # Check the window property.
         
-        palette = ModernTheme.dark_palette() # Default to dark for safety or check property
-        try:
-            # Try to get the theme from the main window
-            mw = QtWidgets.QApplication.activeWindow()
-            if mw and hasattr(mw, 'ui_theme') and mw.ui_theme == 'light':
-                palette = ModernTheme.light_palette()
-        except:
-            pass
+        # 接收区是终端配色，默认字色/强调色都跟 ANSI 调色板走，不再用界面调色板
+        # 主题用本 tab 自己的 ui_theme（set_theme 同步），不查 activeWindow——
+        # 那个查询可能拿不到主窗口，导致浅色主题下误用深色的浅灰字
+        theme = getattr(self, 'ui_theme', 'dark') or 'dark'
+        ansi = ModernTheme.terminal(theme)['ansi']
+        default_fg = ModernTheme.terminal(theme)['fg']
 
         col_map = {
-            'red': palette['error'],
-            'green': palette['success'],
-            'blue': palette['accent'],
-            'orange': palette['warning'],
-            'black': palette['input_text'], # 'black' maps to input text color
+            'red': ansi['bright_red'],
+            'green': ansi['bright_green'],
+            'blue': ansi['bright_blue'],
+            'orange': ansi['yellow'],
+            'black': default_fg,
         }
         
         # 处理颜色：支持十六进制颜色代码和颜色名称
         if color is None:
-            hex_color = palette['input_text']
+            hex_color = default_fg
         elif isinstance(color, str) and color.startswith('#'):
             # 直接使用十六进制颜色代码
             hex_color = color
         else:
             # 在颜色映射中查找颜色名称
-            hex_color = col_map.get(color, palette['input_text'])
+            hex_color = col_map.get(color, default_fg)
 
         cursor = self.recv_text.textCursor()
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
@@ -276,6 +289,12 @@ class BaseCommTab(QtWidgets.QWidget):
 
         # Newline
         cursor.setCharFormat(base_fmt)
+        # 补一次块格式：否则新行会退回界面默认的 24px 行距，和终端观感不一致
+        try:
+            from app.log_view import terminal_block_format
+            cursor.mergeBlockFormat(terminal_block_format())
+        except Exception:
+            pass
         cursor.insertText('\n')
 
         if self.auto_scroll_cb.isChecked():

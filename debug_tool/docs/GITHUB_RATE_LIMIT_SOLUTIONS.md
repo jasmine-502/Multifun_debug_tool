@@ -44,10 +44,10 @@ set GITHUB_TOKEN=your_token_here
 ## 测试命令
 ```bash
 # 命令行测试
-python test_version_check.py --cli
+python tests/test_version_check.py --cli
 
 # GUI测试
-python test_version_check.py
+python tests/test_version_check.py
 ```
 
 ## 故障排除

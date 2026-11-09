@@ -41,8 +41,8 @@ debug_tool/
 │   └── version_manager.py      # 版本管理核心模块
 ├── qt_app.py                   # 主应用（已集成更新功能）
 ├── version.json                # 版本配置文件
-├── requirements.txt            # 依赖（已添加 requests）
-└── test_version_check.py       # 测试脚本
+├── packaging/requirements.txt  # 依赖（已添加 requests）
+└── tests/test_version_check.py # 测试脚本
 ```
 
 ## 版本配置
@@ -62,7 +62,7 @@ debug_tool/
 ### 开发环境测试
 ```bash
 cd debug_tool
-python test_version_check.py
+python tests/test_version_check.py
 ```
 
 ### 正常使用

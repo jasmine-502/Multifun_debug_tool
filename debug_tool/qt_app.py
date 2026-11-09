@@ -23,10 +23,6 @@ if _PROJECT_ROOT not in sys.path:
 
 from app.tcp_tab import TCPClientTabQt
 from app.udp_tab import UDPCommTabQt
-from app.serial_tab import SerialDebugTabQt
-from app.modbus_tab import ModbusTab
-from app.plotter_tab import PlotterTab
-from app.analyzer_tab import ProtocolAnalyzerTab
 from app.esp32_log_tab import ESP32LogTab
 from app.esp32_flash_tab import ESP32FlashTab
 from app.firmware_merge_tab import FirmwareMergeTab
@@ -53,11 +49,11 @@ APP_VERSION = get_app_version()
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f'通信测试上位机 v{APP_VERSION} (PySide6)')
+        self.setWindowTitle(f"通信测试上位机 v{APP_VERSION}")
         self.resize(1200, 800)
         
         # 设置窗口图标（解决任务栏图标不显示问题）
-        icon_path = os.path.join(os.path.dirname(__file__), 'icon.ico')
+        icon_path = os.path.join(os.path.dirname(__file__), 'packaging', 'icon.ico')
         if os.path.exists(icon_path):
             self.setWindowIcon(QtGui.QIcon(icon_path))
 
@@ -94,21 +90,18 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.embedded_font_family = families[0]
         
         # 字体（遵循原配置结构 ui.send_font / ui.recv_font）
+        # 12pt = 16px：与 VS Code 输出面板一致（Consolas 16px 字宽 9px / 行距 22px）
         default_font_family = self.embedded_font_family or 'Consolas'
-        self.send_font = self._get_ui_font('send_font', default_family=default_font_family, default_size=18)
-        self.recv_font = self._get_ui_font('recv_font', default_family=default_font_family, default_size=18)
+        self.send_font = self._get_ui_font('send_font', default_family=default_font_family, default_size=12)
+        self.recv_font = self._get_ui_font('recv_font', default_family=default_font_family, default_size=12)
 
         # 中心区域：标签页
         self.tabs = QtWidgets.QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        # 标签页：TCP / UDP / 串口 / RS485 / CRC / ESP32 Log / ESP32烧录
+        # 标签页：TCP / UDP / ESP32 Log / ESP32烧录 / 固件合并
         self.tcp_tab = TCPClientTabQt(self.get_global_format)
         self.udp_tab = UDPCommTabQt(self.get_global_format)
-        self.serial_tab = SerialDebugTabQt(self.get_global_format, self.get_serial_blacklist)
-        self.modbus_tab = ModbusTab(self.get_global_format, self.get_serial_blacklist)
-        self.plotter_tab = PlotterTab(self.get_global_format)
-        self.analyzer_tab = ProtocolAnalyzerTab(self.get_global_format)
         self.esp32_log_tab = ESP32LogTab(self.get_global_format, self.get_serial_blacklist)
         self.esp32_flash_tab = ESP32FlashTab(self.get_global_format, self.get_serial_blacklist)
         self.firmware_merge_tab = FirmwareMergeTab()
@@ -116,10 +109,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # 加载配置与应用字体
         self.tcp_tab.load_config(self.config.get('tcp', {}))
         self.udp_tab.load_config(self.config.get('udp', {}))
-        self.serial_tab.load_config(self.config.get('serial', {}))
-        self.modbus_tab.load_config(self.config.get('modbus', {}))
-        self.plotter_tab.load_config(self.config.get('plotter', {}))
-        self.analyzer_tab.load_config(self.config.get('analyzer', {}))
         self.esp32_log_tab.load_config(self.config.get('esp32_log', {}))
         self.esp32_flash_tab.load_config(self.config.get('esp32_flash', {}))
 
@@ -128,19 +117,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.tcp_tab.apply_fonts(self.send_font, self.recv_font)
         self.udp_tab.apply_fonts(self.send_font, self.recv_font)
-        self.serial_tab.apply_fonts(self.send_font, self.recv_font)
-        self.modbus_tab.apply_fonts(self.send_font, self.recv_font)
-        self.plotter_tab.apply_fonts(self.send_font, self.recv_font)
-        self.analyzer_tab.apply_fonts(self.send_font, self.recv_font)
         self.esp32_log_tab.apply_fonts(self.send_font, self.recv_font)
         self.esp32_flash_tab.apply_fonts(self.send_font, self.recv_font)
 
         self.tabs.addTab(self.tcp_tab, 'TCP客户端')
         self.tabs.addTab(self.udp_tab, 'UDP通信')
-        self.tabs.addTab(self.serial_tab, '串口调试')
-        self.tabs.addTab(self.modbus_tab, 'Modbus')
-        self.tabs.addTab(self.plotter_tab, '数据波形')
-        self.tabs.addTab(self.analyzer_tab, '协议分析')
         self.tabs.addTab(self.esp32_log_tab, 'ESP32 Log')
         self.tabs.addTab(self.esp32_flash_tab, 'ESP32烧录')
         self.tabs.addTab(self.firmware_merge_tab, '固件合并')
@@ -151,8 +132,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # 数据路由
         self.tcp_tab.data_received.connect(lambda d: self._route_data(d, 'TCP客户端'))
         self.udp_tab.data_received.connect(lambda d: self._route_data(d, 'UDP通信'))
-        self.serial_tab.data_received.connect(lambda d: self._route_data(d, '串口调试'))
-        self.modbus_tab.data_received.connect(lambda d: self._route_data(d, 'Modbus'))
 
         # 恢复上次打开的tab页面
         last_tab = self.config.get('last_active_tab', 0)
@@ -198,7 +177,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 页面变更信号接入自动保存
         try:
-            for tab in [self.tcp_tab, self.udp_tab, self.serial_tab, self.modbus_tab, self.plotter_tab, self.analyzer_tab, self.esp32_log_tab, self.esp32_flash_tab, self.firmware_merge_tab]:
+            for tab in [self.tcp_tab, self.udp_tab, self.esp32_log_tab, self.esp32_flash_tab, self.firmware_merge_tab]:
                 tab.changed.connect(lambda: self._schedule_save())
                 tab._install_autosave_hooks()
         except Exception:
@@ -217,7 +196,6 @@ class MainWindow(QtWidgets.QMainWindow):
         settings_menu.addSeparator()
         settings_menu.addAction('字体大小...', self._show_font_settings)
         settings_menu.addAction('串口黑名单...', self._show_serial_blacklist_settings)
-        settings_menu.addAction('日志颜色设置...', self._show_log_color_settings)
         self.dark_theme_action = QtGui.QAction('深色主题', self)
         self.dark_theme_action.setCheckable(True)
         self.dark_theme_action.setChecked(self.ui_theme == 'dark')
@@ -253,9 +231,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # 数据路由
     def _route_data(self, data, source):
-        self.plotter_tab.process_incoming_data(data, source)
-        self.analyzer_tab.process_incoming_data(data, source)
-        
         # 录制
         if self.record_file:
             try:
@@ -312,12 +287,21 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_theme(self, theme: str):
         app = QtWidgets.QApplication.instance()
         if app:
+            # 先设调色板再设 QSS：QSS 覆盖不到的控件靠调色板兜底，避免暗色下出现白块
+            try:
+                app.setPalette(ModernTheme.get_palette(theme))
+            except Exception:
+                pass
             app.setStyleSheet(ModernTheme.get_qss(theme))
-        # 更新ESP32日志标签页的主题设置
-        try:
-            self.esp32_log_tab.set_theme(theme)
-        except Exception:
-            pass
+        # 把主题下发给各页面：日志视图的底色/前景色不归 QSS 管，要逐个同步
+        for tab in (self.tcp_tab, self.udp_tab, self.esp32_log_tab,
+                    self.esp32_flash_tab, self.firmware_merge_tab):
+            setter = getattr(tab, 'set_theme', None)
+            if setter:
+                try:
+                    setter(theme)
+                except Exception:
+                    pass
 
     def _on_dark_theme_toggled(self, checked: bool):
         self.ui_theme = 'dark' if checked else 'light'
@@ -336,10 +320,16 @@ class MainWindow(QtWidgets.QMainWindow):
         return list(self.serial_blacklist or [])
 
     # 字体读取辅助
+    # 旧版本默认 18pt（24px），换成 VS Code 观感后默认 12pt（16px）；
+    # 存的就是旧默认值时才迁移，用户自己改过的不动。
+    _LEGACY_FONT_SIZE = 18
+
     def _get_ui_font(self, key: str, default_family: str, default_size: int) -> QtGui.QFont:
         ui = self.config.get('ui', {})
         family = (ui.get(key, {}).get('family') or default_family)
         size = int(ui.get(key, {}).get('size') or default_size)
+        if size == self._LEGACY_FONT_SIZE:
+            size = default_size
         f = QtGui.QFont()
         f.setFamily(family)
         f.setPointSize(size)
@@ -375,7 +365,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recv_font.setPointSize(r)
         
         # Update tabs
-        for tab in [self.tcp_tab, self.udp_tab, self.serial_tab, self.modbus_tab, self.plotter_tab, self.analyzer_tab, self.esp32_log_tab, self.esp32_flash_tab]:
+        for tab in [self.tcp_tab, self.udp_tab, self.esp32_log_tab, self.esp32_flash_tab]:
             tab.apply_fonts(self.send_font, self.recv_font)
         self._schedule_save()
 
@@ -423,10 +413,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # 各标签页配置
         cfg['tcp'] = self.tcp_tab.get_config()
         cfg['udp'] = self.udp_tab.get_config()
-        cfg['serial'] = self.serial_tab.get_config()
-        cfg['modbus'] = self.modbus_tab.get_config()
-        cfg['plotter'] = self.plotter_tab.get_config()
-        cfg['analyzer'] = self.analyzer_tab.get_config()
         cfg['esp32_log'] = self.esp32_log_tab.get_config()
         cfg['esp32_flash'] = self.esp32_flash_tab.get_config()
         try:
@@ -449,15 +435,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.send_font = self._get_ui_font('send_font', default_family='Consolas', default_size=18)
         self.recv_font = self._get_ui_font('recv_font', default_family='Consolas', default_size=18)
         # 应用到所有标签页
-        for tab in [self.tcp_tab, self.udp_tab, self.serial_tab, self.modbus_tab, self.plotter_tab, self.analyzer_tab, self.esp32_log_tab, self.esp32_flash_tab, self.firmware_merge_tab]:
+        for tab in [self.tcp_tab, self.udp_tab, self.esp32_log_tab, self.esp32_flash_tab, self.firmware_merge_tab]:
             tab.apply_fonts(self.send_font, self.recv_font)
         # 加载各自配置
         self.tcp_tab.load_config(self.config.get('tcp', {}))
         self.udp_tab.load_config(self.config.get('udp', {}))
-        self.serial_tab.load_config(self.config.get('serial', {}))
-        self.modbus_tab.load_config(self.config.get('modbus', {}))
-        self.plotter_tab.load_config(self.config.get('plotter', {}))
-        self.analyzer_tab.load_config(self.config.get('analyzer', {}))
         self.esp32_log_tab.load_config(self.config.get('esp32_log', {}))
         self.esp32_flash_tab.load_config(self.config.get('esp32_flash', {}))
         self.firmware_merge_tab.load_config(self.config.get('firmware_merge', {}))
@@ -501,14 +483,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.serial_blacklist = [lst.item(i).text() for i in range(lst.count())]
             self._schedule_save()
             try:
-                self.serial_tab._refresh_ports()
-            except Exception:
-                pass
-            try:
-                self.modbus_tab._refresh_ports()
-            except Exception:
-                pass
-            try:
                 self.esp32_log_tab._refresh_ports()
             except Exception:
                 pass
@@ -537,131 +511,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.tabs.setCurrentIndex(i)
                 break
         self.esp32_log_tab._import_log_file(filepath)
-
-    def _show_log_color_settings(self):
-        # 获取当前颜色设置
-        current_colors = self.esp32_log_tab.current_log_colors.copy()
-        
-        dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle('日志颜色设置')
-        dlg.setFixedSize(500, 300)
-        layout = QtWidgets.QVBoxLayout(dlg)
-        
-        # 说明标签
-        info = QtWidgets.QLabel('设置不同日志级别的显示颜色（十六进制格式，如#FF0000）')
-        layout.addWidget(info)
-        
-        # 颜色设置表格
-        table = QtWidgets.QTableWidget(5, 3)
-        table.setHorizontalHeaderLabels(['日志级别', '颜色代码', '预览'])
-        table.horizontalHeader().setStretchLastSection(True)
-        table.verticalHeader().setVisible(False)
-        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked)
-        
-        levels = ['Error', 'Warning', 'Info', 'Debug', 'Verbose']
-        level_display = {
-            'Error': '错误',
-            'Warning': '警告',
-            'Info': '信息',
-            'Debug': '调试',
-            'Verbose': '详细'
-        }
-        
-        self.color_edits = {}  # 临时存储编辑框引用
-        self.color_previews = {}  # 临时存储预览标签引用
-        
-        for i, level in enumerate(levels):
-            # 日志级别
-            level_item = QtWidgets.QTableWidgetItem(level_display.get(level, level))
-            level_item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
-            table.setItem(i, 0, level_item)
-            
-            # 颜色代码编辑框
-            color_edit = QtWidgets.QLineEdit()
-            color_edit.setText(current_colors.get(level, '#000000'))
-            color_edit.setPlaceholderText('#RRGGBB')
-            color_edit.setToolTip(f'输入{level}级别的十六进制颜色代码')
-            self.color_edits[level] = color_edit
-            table.setCellWidget(i, 1, color_edit)
-            
-            # 颜色预览标签
-            preview_label = QtWidgets.QLabel()
-            preview_label.setFixedSize(24, 24)
-            color_value = current_colors.get(level, '#000000')
-            if color_value and color_value.startswith('#') and len(color_value) >= 4:
-                try:
-                    QtGui.QColor(color_value)
-                    preview_label.setStyleSheet(f"background-color: {color_value}; border: 1px solid #cccccc;")
-                except:
-                    preview_label.setStyleSheet(f"background-color: #ffffff; border: 1px solid #ff0000;")
-            else:
-                preview_label.setStyleSheet(f"background-color: #ffffff; border: 1px solid #ff0000;")
-            preview_label.setToolTip(f'{level}颜色预览')
-            self.color_previews[level] = preview_label
-            table.setCellWidget(i, 2, preview_label)
-            
-            # 连接文本变化信号以更新预览
-            def make_update_preview_callback(lvl, preview_widget):
-                def update_preview(text):
-                    if text and text.startswith('#') and len(text) >= 4:
-                        try:
-                            QtGui.QColor(text)
-                            preview_widget.setStyleSheet(f"background-color: {text}; border: 1px solid #cccccc;")
-                        except:
-                            preview_widget.setStyleSheet(f"background-color: #ffffff; border: 1px solid #ff0000;")
-                    else:
-                        preview_widget.setStyleSheet(f"background-color: #ffffff; border: 1px solid #ff0000;")
-                return update_preview
-            
-            color_edit.textChanged.connect(make_update_preview_callback(level, preview_label))
-        
-        table.resizeColumnsToContents()
-        layout.addWidget(table)
-        
-        # 按钮
-        btns = QtWidgets.QHBoxLayout()
-        apply_btn = QtWidgets.QPushButton('应用')
-        cancel_btn = QtWidgets.QPushButton('取消')
-        reset_btn = QtWidgets.QPushButton('恢复默认')
-        btns.addWidget(reset_btn)
-        btns.addStretch(1)
-        btns.addWidget(apply_btn)
-        btns.addWidget(cancel_btn)
-        layout.addLayout(btns)
-        
-        def do_reset():
-            default_colors = {
-                'Error': '#ff0000',
-                'Warning': '#EEBE2F',
-                'Info': '#50DA56',
-                'Debug': '#0000ff',
-                'Verbose': '#800080'
-            }
-            for level in levels:
-                self.color_edits[level].setText(default_colors[level])
-        
-        def do_apply():
-            # 更新颜色字典
-            new_colors = {}
-            for level in levels:
-                color_text = self.color_edits[level].text().strip()
-                if color_text:
-                    new_colors[level] = color_text
-                else:
-                    new_colors[level] = '#000000'
-            
-            # 保存到ESP32日志标签页
-            self.esp32_log_tab.current_log_colors = new_colors
-            # 触发配置保存
-            self.esp32_log_tab.changed.emit()
-            self._schedule_save()
-            dlg.accept()
-        
-        reset_btn.clicked.connect(do_reset)
-        apply_btn.clicked.connect(do_apply)
-        cancel_btn.clicked.connect(dlg.reject)
-        
-        dlg.exec()
 
     # 字体设置
     def _show_font_settings(self):
@@ -741,9 +590,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.recv_font.setPointSize(recv_size)
             
             # 应用字体到所有标签页
-            for tab in [self.tcp_tab, self.udp_tab, self.serial_tab, self.modbus_tab, 
-                       self.plotter_tab, self.analyzer_tab, self.esp32_log_tab, 
-                       self.esp32_flash_tab, self.firmware_merge_tab]:
+            for tab in [self.tcp_tab, self.udp_tab, self.esp32_log_tab,
+                        self.esp32_flash_tab, self.firmware_merge_tab]:
                 try:
                     tab.apply_fonts(self.send_font, self.recv_font)
                 except Exception:
@@ -760,27 +608,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _show_about(self):
         about_text = f"""通信测试上位机
-        
+
 版本: {APP_VERSION}
-基于: PySide6
-功能: 模块化标签页与配置保存
 
-支持协议:
-• TCP/UDP 通信
-• 串口调试
-• Modbus 协议
-• 数据波形显示
-• 协议分析
-• ESP32 日志与烧录
+支持功能:
+• TCP / UDP 通信
+• ESP32 日志查看
+• ESP32 烧录（含加密烧录）
+• ESP32 固件合并"""
 
-自动更新: 支持从 GitHub 自动检查和下载更新"""
-        
         QtWidgets.QMessageBox.information(self, '关于', about_text)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         try:
             # 关闭各标签页连接/线程
-            for tab in [self.tcp_tab, self.udp_tab, self.serial_tab, self.modbus_tab, self.plotter_tab, self.analyzer_tab, self.esp32_flash_tab]:
+            for tab in [self.tcp_tab, self.udp_tab, self.esp32_flash_tab]:
                 try:
                     tab.shutdown()
                 except Exception:
@@ -894,7 +736,7 @@ def main():
     app = QtWidgets.QApplication(sys.argv)
     
     # 设置应用程序图标（确保任务栏图标显示）
-    icon_path = os.path.join(os.path.dirname(__file__), 'icon.ico')
+    icon_path = os.path.join(os.path.dirname(__file__), 'packaging', 'icon.ico')
     if os.path.exists(icon_path):
         app.setWindowIcon(QtGui.QIcon(icon_path))
     

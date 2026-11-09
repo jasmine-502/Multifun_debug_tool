@@ -6,6 +6,8 @@ import json
 import re
 from datetime import datetime
 
+from app.log_view import LogView
+
 # 导入 release_output_binV2 中的核心函数
 # 确保 tool 目录在 path 中
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -82,6 +84,8 @@ class FirmwareMergeTab(QtWidgets.QWidget):
         super().__init__(parent)
 
         self.layout = QtWidgets.QVBoxLayout(self)
+        self.layout.setContentsMargins(8, 4, 8, 8)
+        self.layout.setSpacing(12)
 
         # ========== 1. 顶部配置区 ==========
         config_group = QtWidgets.QGroupBox("合并配置")
@@ -90,7 +94,7 @@ class FirmwareMergeTab(QtWidgets.QWidget):
         # 项目根目录选择
         config_layout.addWidget(QtWidgets.QLabel("项目根目录:"), 0, 0)
         self.root_dir_edit = DropLineEdit()
-        self.root_dir_edit.setPlaceholderText("选择或拖放 ESP-IDF 项目根目录（包含 CMakeLists.txt 和 build 目录）")
+        self.root_dir_edit.setPlaceholderText("选择或拖放项目目录")
         self.root_dir_edit.setToolTip("选择或拖放文件夹后会自动扫描 build/flasher_args.json 中的固件文件")
         self.root_dir_edit.dir_dropped.connect(self._on_root_dir_dropped)
         config_layout.addWidget(self.root_dir_edit, 0, 1)
@@ -107,7 +111,7 @@ class FirmwareMergeTab(QtWidgets.QWidget):
         # 输出文件名称预览行
         config_layout.addWidget(QtWidgets.QLabel("输出文件名:"), 1, 0)
         self.output_name_label = QtWidgets.QLabel("merged_firmware.bin")
-        self.output_name_label.setStyleSheet("QLabel { font-weight: bold; color: #0078D4; }")
+        self.output_name_label.setObjectName('outputName')
         config_layout.addWidget(self.output_name_label, 1, 1, 1, 2)
 
         # 输出目录选择
@@ -120,22 +124,23 @@ class FirmwareMergeTab(QtWidgets.QWidget):
         self.browse_output_dir_btn.clicked.connect(self._browse_output_dir)
         config_layout.addWidget(self.browse_output_dir_btn, 2, 2)
 
-        # 文件名格式选项
-        fmt_group = QtWidgets.QGroupBox("输出文件名格式选项")
-        fmt_layout = QtWidgets.QHBoxLayout(fmt_group)
+        # 文件名格式选项（一行标签 + 复选框，不再嵌套 QGroupBox，避免标题和控件挤在一起）
+        config_layout.addWidget(QtWidgets.QLabel("输出文件名格式:"), 3, 0)
 
-        self.add_date_check = QtWidgets.QCheckBox("添加日期时间（精确到秒）")
-        self.add_date_check.setToolTip("格式: YYYYMMDD_HHMMSS，例如 20260703_143025")
+        fmt_row = QtWidgets.QWidget()
+        fmt_layout = QtWidgets.QHBoxLayout(fmt_row)
+        fmt_layout.setContentsMargins(0, 0, 0, 0)
+        fmt_layout.setSpacing(14)
+
+        self.add_date_check = QtWidgets.QCheckBox("添加日期时间")
         self.add_date_check.setChecked(True)
         self.add_date_check.stateChanged.connect(self._update_output_name_preview)
 
         self.add_version_check = QtWidgets.QCheckBox("添加版本号")
-        self.add_version_check.setToolTip("从 CMakeLists.txt 中读取 PROJECT_VER 版本号")
         self.add_version_check.setChecked(True)
         self.add_version_check.stateChanged.connect(self._update_output_name_preview)
 
         self.add_project_name_check = QtWidgets.QCheckBox("添加项目名称")
-        self.add_project_name_check.setToolTip("从 CMakeLists.txt 中解析项目名称，若无法解析则使用目录名")
         self.add_project_name_check.setChecked(False)
         self.add_project_name_check.stateChanged.connect(self._update_output_name_preview)
 
@@ -144,7 +149,7 @@ class FirmwareMergeTab(QtWidgets.QWidget):
         fmt_layout.addWidget(self.add_project_name_check)
         fmt_layout.addStretch()
 
-        config_layout.addWidget(fmt_group, 3, 0, 1, 3)
+        config_layout.addWidget(fmt_row, 3, 1, 1, 3)
 
         self.layout.addWidget(config_group)
 
@@ -169,18 +174,16 @@ class FirmwareMergeTab(QtWidgets.QWidget):
         btn_layout.addWidget(self.add_row_btn)
         btn_layout.addWidget(self.clear_table_btn)
 
-        # 芯片和 Flash 信息显示
+        # 芯片和 Flash 信息显示（配色交给 app/theme.py，避免暗色主题下冒出白块）
         self.chip_info_label = QtWidgets.QLabel("芯片: 未知")
         self.flash_info_label = QtWidgets.QLabel("Flash大小: 未知")
         self.freq_info_label = QtWidgets.QLabel("频率: 未知")
 
-        info_style = "QLabel { font-weight: bold; color: #0055A4; padding: 0px 10px; }"
-        self.chip_info_label.setStyleSheet(info_style)
-        self.flash_info_label.setStyleSheet(info_style)
-        self.freq_info_label.setStyleSheet(info_style)
+        for _lb in (self.chip_info_label, self.flash_info_label, self.freq_info_label):
+            _lb.setObjectName('infoText')
 
         info_widget = QtWidgets.QFrame()
-        info_widget.setStyleSheet("QFrame { border: 1px solid #cccccc; border-radius: 4px; background-color: #f8f9fa; }")
+        info_widget.setObjectName('infoBar')
         info_inner_layout = QtWidgets.QHBoxLayout(info_widget)
         info_inner_layout.setContentsMargins(5, 2, 5, 2)
         info_inner_layout.addWidget(self.chip_info_label)
@@ -191,8 +194,8 @@ class FirmwareMergeTab(QtWidgets.QWidget):
         btn_layout.addStretch()
 
         self.merge_btn = QtWidgets.QPushButton("合并固件")
-        self.merge_btn.setMinimumHeight(35)
-        self.merge_btn.setStyleSheet("QPushButton { font-weight: bold; }")
+        self.merge_btn.setMinimumHeight(32)
+        self.merge_btn.setProperty('primary', True)
         self.merge_btn.clicked.connect(self._merge_firmware)
         btn_layout.addWidget(self.merge_btn)
 
@@ -202,8 +205,9 @@ class FirmwareMergeTab(QtWidgets.QWidget):
         # ========== 3. 日志输出区 ==========
         log_group = QtWidgets.QGroupBox("执行日志")
         log_layout = QtWidgets.QVBoxLayout(log_group)
-        self.log_text = QtWidgets.QTextEdit()
-        self.log_text.setReadOnly(True)
+        log_layout.setContentsMargins(0, 2, 0, 0)
+        log_layout.setSpacing(0)
+        self.log_text = LogView()
         log_layout.addWidget(self.log_text)
         self.layout.addWidget(log_group)
 
@@ -239,27 +243,38 @@ class FirmwareMergeTab(QtWidgets.QWidget):
 
     # ==================== 自动扫描 ====================
 
+    @staticmethod
+    def _resolve_build_dir(root_dir):
+        """定位 build 目录
+
+        用户既可能选项目根目录，也可能直接选到 build 目录本身，
+        直接 join 会拼出 xxx/build/build 这种不存在的路径。
+        """
+        if not root_dir or not os.path.isdir(root_dir):
+            return None
+        if os.path.basename(os.path.normpath(root_dir)).lower() == "build":
+            return root_dir
+        candidate = os.path.join(root_dir, "build")
+        return candidate if os.path.isdir(candidate) else None
+
     def _auto_scan_if_valid(self, root_dir):
         """当目录有效时自动触发扫描"""
-        if not root_dir or not os.path.isdir(root_dir):
-            return
-        build_dir = os.path.join(root_dir, "build")
-        flasher_json = os.path.join(build_dir, "flasher_args.json")
-        if os.path.exists(flasher_json):
-            self._log("检测到 build/flasher_args.json，自动扫描中...")
+        build_dir = self._resolve_build_dir(root_dir)
+        if build_dir and os.path.exists(os.path.join(build_dir, "flasher_args.json")):
+            self._log("检测到 flasher_args.json，自动扫描中...")
             self._scan_build_dir()
 
     def _scan_build_dir(self):
-        """扫描项目根目录下的 build/flasher_args.json 和 build 目录下的 .bin 文件"""
+        """扫描 build/flasher_args.json 和 build 目录下的 .bin 文件"""
         root_dir = self.root_dir_edit.text().strip()
         if not root_dir or not os.path.isdir(root_dir):
-            self._log("请先选择有效的项目根目录", "red")
+            self._log("请先选择有效的项目目录", "red")
             return
 
-        build_dir = os.path.join(root_dir, "build")
-        if not os.path.isdir(build_dir):
-            self._log(f"错误: 项目根目录下未找到 build 目录 ({build_dir})", "red")
-            self._log("请先在项目根目录执行 idf.py build 编译项目", "orange")
+        build_dir = self._resolve_build_dir(root_dir)
+        if not build_dir:
+            self._log(f"未找到 build 目录（已查找: {os.path.join(root_dir, 'build')}）", "red")
+            self._log("请先编译项目生成 build 目录", "orange")
             return
 
         self._log(f"开始扫描: {build_dir} ...")
@@ -275,9 +290,9 @@ class FirmwareMergeTab(QtWidgets.QWidget):
         self._update_output_name_preview()
 
         if self._current_version:
-            self._log(f"从 CMakeLists.txt 读取到版本号: V{self._current_version}")
+            self._log(f"已读取版本号: V{self._current_version}")
         if self._current_project_name:
-            self._log(f"从 CMakeLists.txt 读取到项目名称: {self._current_project_name}")
+            self._log(f"已读取项目名称: {self._current_project_name}")
 
         # 尝试读取 flasher_args.json
         flasher_args_path = os.path.join(build_dir, "flasher_args.json")
@@ -425,6 +440,7 @@ class FirmwareMergeTab(QtWidgets.QWidget):
 
         path_edit = QtWidgets.QLineEdit(file_path)
         browse_btn = QtWidgets.QPushButton("...")
+        browse_btn.setObjectName('tinyBtn')   # 紧凑按钮：去掉左右内边距，否则 30px 宽度装不下
         browse_btn.setFixedWidth(30)
         browse_btn.clicked.connect(lambda _, edit=path_edit: self._browse_row_file(edit))
 
@@ -455,10 +471,18 @@ class FirmwareMergeTab(QtWidgets.QWidget):
 
     # ==================== 日志与芯片信息 ====================
 
-    def _log(self, msg, color="black"):
-        timestamp = datetime.now().strftime("[%H:%M:%S] ")
-        html = f'<span style="color:{color}">{timestamp}{msg}</span>'
-        self.log_text.append(html)
+    def _log(self, msg, color=""):
+        """写执行日志。
+
+        color 留空时不写死颜色，让文字跟随控件的正文色 —— 深色主题下黑字
+        会看不见，而且切主题后旧行也能自动变过来。红/绿/黄走 VS Code ANSI 配色。
+        """
+        stamp = datetime.now().strftime("[%H:%M:%S] ")
+        self.log_text.append_line(f"{stamp}{msg}", color)
+
+    def set_theme(self, theme: str):
+        self.log_text.set_theme(theme)
+
 
     def _update_chip_info(self, chip, flash_size, flash_freq):
         if hasattr(self, 'chip_info_label'):

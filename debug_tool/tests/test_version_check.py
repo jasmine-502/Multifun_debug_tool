@@ -7,8 +7,8 @@
 import sys
 import os
 
-# 添加项目路径
-sys.path.insert(0, os.path.dirname(__file__))
+# 添加项目根路径（本文件位于 tests/ 下）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.version_manager import VersionManager
 from PySide6 import QtWidgets, QtCore

@@ -15,12 +15,25 @@ import zipfile
 import logging
 from datetime import datetime
 from typing import Optional, Callable
+# requests 首次 import 约耗时 1s，绝不能放在启动路径上。
+# 这里只做"是否安装"的轻量探测，真正 import 推迟到后台线程第一次使用时。
 try:
-    import requests
-    REQUESTS_AVAILABLE = True
-except ImportError:
-    requests = None
+    from importlib.util import find_spec as _find_spec
+    REQUESTS_AVAILABLE = _find_spec('requests') is not None
+except Exception:
     REQUESTS_AVAILABLE = False
+
+
+class _LazyRequests:
+    """requests 的延迟代理：第一次访问属性时才真正 import，并替换掉代理"""
+
+    def __getattr__(self, name):
+        import requests as _real
+        globals()['requests'] = _real
+        return getattr(_real, name)
+
+
+requests = _LazyRequests()
 from PySide6 import QtCore, QtWidgets
 
 
@@ -233,9 +246,10 @@ class VersionManager(QtCore.QObject):
         if token:
             return token
         
-        # 然后尝试配置文件
+        # 然后尝试配置文件（项目根目录下的 config/github_config.json）
         try:
-            config_path = os.path.join(os.path.dirname(__file__), '..', 'github_config.json')
+            config_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)), 'config', 'github_config.json')
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)

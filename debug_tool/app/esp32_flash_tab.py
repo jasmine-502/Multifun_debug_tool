@@ -1,7 +1,11 @@
 from PySide6 import QtWidgets, QtCore, QtGui
+import os
+import re
 import threading
-import time
 import sys
+import time
+
+from app.log_view import LogView
 
 try:
     import serial
@@ -9,6 +13,32 @@ try:
     SERIAL_AVAILABLE = True
 except Exception:
     SERIAL_AVAILABLE = False
+
+# esptool 是乐鑫官方烧录库。
+# 导入 esptool 约需 0.6s，绝不能放在启动路径上：
+# 这里只用 find_spec 探测是否安装，真正 import 推迟到第一次烧录时。
+try:
+    from importlib.util import find_spec as _find_spec
+    ESPTOOL_AVAILABLE = _find_spec('esptool') is not None
+except Exception:
+    ESPTOOL_AVAILABLE = False
+
+try:
+    from importlib.metadata import version as _dist_version
+    ESPTOOL_VERSION = _dist_version('esptool')
+except Exception:
+    ESPTOOL_VERSION = ''
+
+_ESPTOOL_MOD = None
+
+
+def _load_esptool():
+    """延迟导入 esptool（首次烧录时才付出导入开销）"""
+    global _ESPTOOL_MOD
+    if _ESPTOOL_MOD is None:
+        import esptool as _m
+        _ESPTOOL_MOD = _m
+    return _ESPTOOL_MOD
 
 # Windows USB 设备变化监听
 if sys.platform == 'win32':
@@ -24,16 +54,16 @@ else:
 
 class USBDeviceMonitor(QtCore.QAbstractNativeEventFilter):
     """Windows USB 设备插拔监听器"""
-    
+
     # Windows 消息常量
     WM_DEVICECHANGE = 0x0219
     DBT_DEVICEARRIVAL = 0x8000
     DBT_DEVICEREMOVECOMPLETE = 0x8004
-    
+
     def __init__(self, callback):
         super().__init__()
         self.callback = callback
-    
+
     def nativeEventFilter(self, eventType, message):
         if WINDOWS_USB_AVAILABLE and sys.platform == 'win32':
             try:
@@ -49,442 +79,414 @@ class USBDeviceMonitor(QtCore.QAbstractNativeEventFilter):
 
 
 class ESP32FlashTab(QtWidgets.QWidget):
+    """ESP32 烧录页
+
+    设计：本页不做常驻串口连接。点「烧录 / 擦除 / 检测芯片 / 烧密钥」时由 esptool
+    自己打开串口，操作结束自动释放，因此不存在"串口被占用关不掉"的问题。
+    需要看串口输出请用 ESP32 Log 页面。
+    """
+
     changed = QtCore.Signal()
+
+    # 与 esptool --chip 参数取值保持一致
+    CHIP_OPTIONS = [
+        ('auto', '自动检测'),
+        ('esp32', 'ESP32'),
+        ('esp32s2', 'ESP32-S2'),
+        ('esp32s3', 'ESP32-S3'),
+        ('esp32c2', 'ESP32-C2'),
+        ('esp32c3', 'ESP32-C3'),
+        ('esp32c6', 'ESP32-C6'),
+        ('esp32c61', 'ESP32-C61'),
+        ('esp32h2', 'ESP32-H2'),
+        ('esp32p4', 'ESP32-P4'),
+    ]
 
     def __init__(self, get_global_format, get_serial_blacklist=None, parent=None):
         super().__init__(parent)
         self.get_global_format = get_global_format
         self.get_serial_blacklist = get_serial_blacklist or (lambda: [])
-        self.ser = None
-        self.running = False
-        self.reconnecting = False
-        self.last_port = None
-        self.last_baud = None
         self.usb_monitor = None
-        self.previous_ports = set()  # 记录之前的端口列表
+        self.previous_ports = set()   # 记录之前的端口列表
+        self.flashing = False         # 是否正在烧录/擦除，期间禁止重复触发
+        self.ui_theme = 'dark'        # 由主窗口 set_theme 同步
+        self._esptool_lock = threading.Lock()  # esptool 会重定向全局 stdout，需串行化
         self._build_ui()
         self._setup_usb_monitor()
 
+    # ---------- UI ----------
+
+    @staticmethod
+    def _button(text, tooltip=None, big=False):
+        """自适应宽度按钮：宽度由字体度量算出来，避免固定像素在高 DPI 下被文字撑破"""
+        btn = QtWidgets.QPushButton(text)
+        if big:
+            # 主操作按钮：更高更宽更醒目（样式在 theme.py 的 QPushButton#bigBtn）
+            btn.setObjectName('bigBtn')
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
+                              QtWidgets.QSizePolicy.Policy.Fixed)
+        else:
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
+                              QtWidgets.QSizePolicy.Policy.Fixed)
+        if tooltip:
+            btn.setToolTip(tooltip)
+        return btn
+
     def _build_ui(self):
         main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(8, 4, 8, 8)
+        main_layout.setSpacing(12)
 
-        # 顶部水平分割：左侧（串口设置+下载功能） | 右侧（操作日志）
-        top_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        
-        # === 左侧区域 ===
-        left_widget = QtWidgets.QWidget()
-        left_layout = QtWidgets.QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
-
-        # 1. 串口设置组
+        # === 1. 连接参数 ===
         serial_group = QtWidgets.QGroupBox('串口设置')
         serial_layout = QtWidgets.QHBoxLayout(serial_group)
         serial_layout.setContentsMargins(8, 8, 8, 8)
         serial_layout.setSpacing(6)
-        
+
         serial_layout.addWidget(QtWidgets.QLabel('端口号:'))
         self.port_combo = QtWidgets.QComboBox()
-        self.port_combo.setMinimumWidth(140)
+        self.port_combo.setMinimumWidth(150)
+        self.port_combo.setToolTip('烧录时自动连接该端口，结束后自动释放')
         serial_layout.addWidget(self.port_combo)
-        
-        self.refresh_btn = QtWidgets.QPushButton('刷新')
+
+        self.refresh_btn = self._button('刷新', '重新扫描串口')
         serial_layout.addWidget(self.refresh_btn)
-        
+
         serial_layout.addWidget(QtWidgets.QLabel('波特率:'))
         self.baud_combo = QtWidgets.QComboBox()
         self.baud_combo.addItems(['115200', '230400', '460800', '921600'])
-        self.baud_combo.setCurrentText('115200')
+        self.baud_combo.setCurrentText('460800')
         serial_layout.addWidget(self.baud_combo)
-        
-        self.open_btn = QtWidgets.QPushButton('打开串口')
-        self.open_btn.setFixedWidth(100)
-        serial_layout.addWidget(self.open_btn)
-        
-        self.reset_btn = QtWidgets.QPushButton('重启')
-        self.reset_btn.setFixedWidth(80)
-        self.reset_btn.setEnabled(False)
-        serial_layout.addWidget(self.reset_btn)
-        
-        self.auto_reconnect_cb = QtWidgets.QCheckBox('自动重连')
-        self.auto_reconnect_cb.setChecked(True)
-        self.auto_reconnect_cb.setToolTip('串口异常断开时自动尝试重连')
-        serial_layout.addWidget(self.auto_reconnect_cb)
-        
-        self.status_label = QtWidgets.QLabel('未连接')
-        self.status_label.setStyleSheet('color: red; font-weight: bold;')
-        serial_layout.addWidget(self.status_label)
-        serial_layout.addStretch(1)
-        
-        left_layout.addWidget(serial_group)
 
-        # 2. 下载功能组
+        serial_layout.addWidget(QtWidgets.QLabel('芯片型号:'))
+        self.chip_combo = QtWidgets.QComboBox()
+        for val, label in self.CHIP_OPTIONS:
+            self.chip_combo.addItem(label, val)
+        self.chip_combo.setMinimumWidth(110)
+        self.chip_combo.setToolTip('选择目标芯片；不确定时用「自动检测」')
+        serial_layout.addWidget(self.chip_combo)
+
+        serial_layout.addStretch(1)
+
+        self.status_label = QtWidgets.QLabel('就绪')
+        self.status_label.setStyleSheet('color: gray; font-weight: bold;')
+        serial_layout.addWidget(self.status_label)
+
+        main_layout.addWidget(serial_group)
+
+        # === 2. 烧录文件 ===
         download_group = QtWidgets.QGroupBox('下载功能')
         download_layout = QtWidgets.QVBoxLayout(download_group)
         download_layout.setContentsMargins(8, 8, 8, 8)
         download_layout.setSpacing(4)
-        
+
         self.flash_rows = []
         for i in range(4):
             row_widget = QtWidgets.QWidget()
             row_layout = QtWidgets.QHBoxLayout(row_widget)
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(6)
-            
+
             checkbox = QtWidgets.QCheckBox()
             checkbox.setChecked(i == 0)  # 默认第一行选中
             row_layout.addWidget(checkbox)
-            
+
             row_layout.addWidget(QtWidgets.QLabel('烧录地址:'))
             addr_edit = QtWidgets.QLineEdit()
-            addr_edit.setPlaceholderText('0x1000')
+            addr_edit.setPlaceholderText('0x0')
             addr_edit.setFixedWidth(100)
-            # 设置默认地址
-            default_addrs = ['0x1000', '0x8000', '0xe000', '0x10000']
-            addr_edit.setText(default_addrs[i])
+            # 默认 0x0：通常烧录的是合并后的整片固件
+            addr_edit.setText('0x0')
             row_layout.addWidget(addr_edit)
-            
+
             row_layout.addWidget(QtWidgets.QLabel('Bin文件:'))
             bin_edit = QtWidgets.QLineEdit()
             bin_edit.setPlaceholderText('选择bin文件路径')
             row_layout.addWidget(bin_edit, 1)
-            
-            browse_btn = QtWidgets.QPushButton('浏览...')
-            browse_btn.setFixedWidth(80)
+
+            browse_btn = self._button('浏览...', '选择 bin 文件')
             row_layout.addWidget(browse_btn)
-            
+
             download_layout.addWidget(row_widget)
-            
+
             self.flash_rows.append({
                 'checkbox': checkbox,
                 'addr_edit': addr_edit,
                 'bin_edit': bin_edit,
                 'browse_btn': browse_btn
             })
-            
-            # 连接浏览按钮
+
             browse_btn.clicked.connect(lambda checked=False, idx=i: self._browse_bin_file(idx))
-        
-        # 底部按钮和进度条
+
+        # 操作按钮：加大加长，一行只放按钮
         bottom_layout = QtWidgets.QHBoxLayout()
-        bottom_layout.setSpacing(10)
-        
-        self.erase_btn = QtWidgets.QPushButton('擦除')
-        self.erase_btn.setFixedWidth(100)
-        self.erase_btn.setEnabled(False)
+        bottom_layout.setSpacing(14)
+
+        self.erase_btn = self._button('擦除', '擦除整片 Flash', big=True)
         bottom_layout.addWidget(self.erase_btn)
-        
-        self.flash_btn = QtWidgets.QPushButton('烧录')
-        self.flash_btn.setFixedWidth(100)
-        self.flash_btn.setEnabled(False)
+
+        self.flash_btn = self._button('烧录', '烧录选中的固件文件', big=True)
+        self.flash_btn.setProperty('primary', True)  # 主操作：走强调色样式
         bottom_layout.addWidget(self.flash_btn)
-        
-        bottom_layout.addSpacing(20)
-        bottom_layout.addWidget(QtWidgets.QLabel('进度:'))
-        
+
+        bottom_layout.addStretch(1)
+        download_layout.addLayout(bottom_layout)
+
+        # 进度条独立成一行，百分比放在进度条右侧
+        progress_layout = QtWidgets.QHBoxLayout()
+        progress_layout.setSpacing(8)
+        progress_layout.addWidget(QtWidgets.QLabel('进度:'))
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        bottom_layout.addWidget(self.progress_bar, 1)
-        
-        download_layout.addLayout(bottom_layout)
-        left_layout.addWidget(download_group)
-        left_layout.addStretch(1)
+        progress_layout.addWidget(self.progress_bar, 1)
 
-        # === 右侧区域：操作日志 ===
-        right_widget = QtWidgets.QWidget()
-        right_layout = QtWidgets.QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(4)
-        
-        log_label = QtWidgets.QLabel('操作日志')
-        log_label.setStyleSheet('font-weight: bold;')
-        right_layout.addWidget(log_label)
-        
-        self.operation_log = QtWidgets.QTextEdit()
-        self.operation_log.setReadOnly(True)
-        self.operation_log.setMaximumHeight(300)
-        right_layout.addWidget(self.operation_log)
-        
-        clear_log_btn = QtWidgets.QPushButton('清空日志')
-        clear_log_btn.setFixedWidth(100)
-        clear_log_btn.clicked.connect(self.operation_log.clear)
-        right_layout.addWidget(clear_log_btn)
-        right_layout.addStretch(1)
+        self.progress_value = QtWidgets.QLabel('0%')
+        self.progress_value.setObjectName('progressValue')
+        self.progress_value.setMinimumWidth(52)
+        self.progress_value.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight |
+                                         QtCore.Qt.AlignmentFlag.AlignVCenter)
+        progress_layout.addWidget(self.progress_value)
+        download_layout.addLayout(progress_layout)
 
-        # 添加到顶部分割器
-        top_splitter.addWidget(left_widget)
-        top_splitter.addWidget(right_widget)
-        top_splitter.setStretchFactor(0, 3)
-        top_splitter.setStretchFactor(1, 1)
-        
-        main_layout.addWidget(top_splitter)
+        main_layout.addWidget(download_group)
 
-        # === 底部：串口Log显示 ===
-        serial_log_group = QtWidgets.QGroupBox('串口Log')
-        serial_log_layout = QtWidgets.QVBoxLayout(serial_log_group)
-        serial_log_layout.setContentsMargins(8, 8, 8, 8)
-        serial_log_layout.setSpacing(4)
-        
-        self.serial_log = QtWidgets.QTextEdit()
-        self.serial_log.setReadOnly(True)
-        self.serial_log.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-        self.serial_log.customContextMenuRequested.connect(self._show_serial_log_context_menu)
-        serial_log_layout.addWidget(self.serial_log, 1)  # stretch factor = 1，让它占满空间
-        
-        log_bottom_layout = QtWidgets.QHBoxLayout()
-        self.auto_scroll_cb = QtWidgets.QCheckBox('自动滚动')
-        self.auto_scroll_cb.setChecked(True)
-        log_bottom_layout.addWidget(self.auto_scroll_cb)
-        log_bottom_layout.addStretch(1)
-        
-        serial_log_layout.addLayout(log_bottom_layout)
-        main_layout.addWidget(serial_log_group, 1)  # stretch factor = 1，让group也能伸展
+        # === 3. 芯片信息：结构化展示检测结果，不再刷一屏原始日志 ===
+        chip_group = QtWidgets.QGroupBox('芯片信息')
+        chip_layout = QtWidgets.QVBoxLayout(chip_group)
+        chip_layout.setContentsMargins(8, 4, 8, 8)
+        chip_layout.setSpacing(6)
+
+        detect_row = QtWidgets.QHBoxLayout()
+        self.chip_hint_label = QtWidgets.QLabel('点击「检测芯片」读取芯片与 Flash 信息')
+        self.chip_hint_label.setObjectName('fieldLabel')
+        detect_row.addWidget(self.chip_hint_label)
+        detect_row.addStretch(1)
+        self.detect_btn = self._button('检测芯片', '读取芯片型号、MAC 与 Flash 容量')
+        detect_row.addWidget(self.detect_btn)
+        chip_layout.addLayout(detect_row)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(3)
+
+        def _field(name):
+            label = QtWidgets.QLabel(name)
+            label.setObjectName('fieldLabel')
+            value = QtWidgets.QLabel('—')
+            value.setObjectName('fieldValue')
+            # 鼠标可划选，选中后 Ctrl+C 即可复制
+            value.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse |
+                QtCore.Qt.TextInteractionFlag.TextSelectableByKeyboard)
+            value.setCursor(QtCore.Qt.CursorShape.IBeamCursor)
+            return label, value
+
+        self.chip_fields = {}
+        pairs = [('chip', '芯片型号:'), ('crystal', '晶振频率:'),
+                 ('usb', 'USB 模式:'), ('mac', 'MAC 地址:'),
+                 ('flash_size', 'Flash 容量:'), ('flash_mode', 'Flash 模式:'),
+                 ('flash_id', '厂商/器件 ID:'), ('flash_voltage', 'Flash 电压:')]
+
+        r = 0
+        for i in range(0, len(pairs), 2):
+            for c, (key, text) in enumerate(pairs[i:i + 2]):
+                label, value = _field(text)
+                grid.addWidget(label, r, c * 2)
+                grid.addWidget(value, r, c * 2 + 1)
+                self.chip_fields[key] = value
+            r += 1
+
+        # 功能特性很长，单独占一整行
+        label, value = _field('功能特性:')
+        grid.addWidget(label, r, 0)
+        grid.addWidget(value, r, 1, 1, 3)
+        self.chip_fields['features'] = value
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
+
+        chip_layout.addLayout(grid)
+        main_layout.addWidget(chip_group)
+
+        # === 3. 操作日志：只记烧录/擦除/检测的过程与结果，不显示串口数据 ===
+        log_group = QtWidgets.QGroupBox('操作日志')
+        log_layout = QtWidgets.QVBoxLayout(log_group)
+        log_layout.setContentsMargins(0, 2, 0, 0)
+        log_layout.setSpacing(0)
+
+        self.log_view = LogView(theme=self.ui_theme)
+        log_layout.addWidget(self.log_view, 1)
+
+        main_layout.addWidget(log_group, 1)
 
         # 连接信号
         self.refresh_btn.clicked.connect(self._refresh_ports)
-        self.open_btn.clicked.connect(self._toggle_serial)
-        self.reset_btn.clicked.connect(self._reset_device)
         self.erase_btn.clicked.connect(self._erase_flash)
         self.flash_btn.clicked.connect(self._flash_firmware)
-        
+        self.detect_btn.clicked.connect(self._detect_chip)
+
         # 初始化串口列表
         self._refresh_ports()
 
-    def _refresh_ports(self, auto_select_new=False):
+        # 环境就绪提示
+        if ESPTOOL_AVAILABLE:
+            self._log_operation('就绪，点烧录会自动连接串口')
+        else:
+            self._set_status('环境异常', 'red')
+            self._log_operation('未找到烧录组件，烧录/擦除不可用', 'red')
+
+    # ---------- 端口列表 ----------
+
+    def _refresh_ports(self, auto_select_new=False, quiet=False):
         """刷新串口列表
-        
+
         Args:
             auto_select_new: 是否自动选中新插入的设备
+            quiet: 静默刷新（USB 热插拔触发时用，不刷新底部提示）
         """
         if not SERIAL_AVAILABLE:
-            self._log_operation('错误: 串口库不可用', 'red')
+            if not quiet:
+                self._set_hint('错误: 串口库不可用', 'red')
             return
         try:
             bl = list(self.get_serial_blacklist() or [])
-            
-            # 获取当前端口列表
+
             current_ports = set()
             port_infos = []
             for info in serial.tools.list_ports.comports():
                 if info.device not in bl:
                     current_ports.add(info.device)
                     port_infos.append(info)
-            
-            # 检测新插入的设备
+
+            # 记录当前选中项，刷新后尽量保持
+            keep = self.port_combo.currentData()
             new_ports = current_ports - self.previous_ports
-            
-            # 更新下拉框
+
+            self.port_combo.blockSignals(True)
             self.port_combo.clear()
             for info in port_infos:
                 label = f"{info.device} - {getattr(info, 'description', None) or getattr(info, 'hwid', '')}"
                 self.port_combo.addItem(label, info.device)
-            
-            # 如果有新设备插入且需要自动选中
+            self.port_combo.blockSignals(False)
+
+            target = None
             if auto_select_new and new_ports:
-                new_port = sorted(new_ports)[0]  # 选择第一个新设备
+                target = sorted(new_ports)[0]      # 优先选中新插入的设备
+            elif keep in current_ports:
+                target = keep
+
+            if target:
                 for i in range(self.port_combo.count()):
-                    if self.port_combo.itemData(i) == new_port:
+                    if self.port_combo.itemData(i) == target:
                         self.port_combo.setCurrentIndex(i)
-                        self._log_operation(f'检测到新设备: {new_port}，已自动选中', 'green')
                         break
-            
-            # 更新记录的端口列表
+
             self.previous_ports = current_ports
-            
-            self._log_operation(f'刷新串口列表，找到 {self.port_combo.count()} 个端口', 'blue')
+
+            if not quiet:
+                if port_infos:
+                    self._set_hint(f'找到 {len(port_infos)} 个串口', 'gray')
+                else:
+                    self._set_hint('未找到串口，请检查 USB 线/驱动', 'orange')
         except Exception as e:
-            self._log_operation(f'刷新串口失败: {e}', 'red')
+            if not quiet:
+                self._set_hint(f'刷新串口失败: {e}', 'red')
 
-    def _toggle_serial(self):
-        if self.running:
-            self._close_serial()
-        else:
-            self._open_serial()
+    def _current_port(self):
+        """当前选择的串口名"""
+        return self.port_combo.currentData() or ''
 
-    def _open_serial(self):
-        if not SERIAL_AVAILABLE:
-            self._log_operation('错误: 串口库不可用', 'red')
+    # ---------- 提示 / 状态 ----------
+
+    def _set_status(self, text, color='gray'):
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f'color: {color}; font-weight: bold;')
+
+    def _set_hint(self, text, color='gray'):
+        """兼容旧调用：一律写进操作日志"""
+        self._log_operation(text, color)
+
+    @QtCore.Slot(str, str)
+    def _log_operation(self, text: str, color: str = ''):
+        """写一行操作日志
+
+        不指定颜色时跟随正文色（深色主题下不会出现黑字看不见的问题）；
+        错误/成功/警告走 VS Code ANSI 配色。
+        """
+        line = (text or '').rstrip()
+        if not line:
             return
+        stamp = time.strftime('[%H:%M:%S] ')
+        self.log_view.append_line(stamp + line, color)
+
+    def set_theme(self, theme: str):
+        self.ui_theme = theme
+        self.log_view.set_theme(theme)
+
+
+    def _ui_log(self, text, color='black'):
+        """线程安全的日志输出（工作线程 -> 主线程）"""
+        QtCore.QMetaObject.invokeMethod(
+            self, '_log_operation', QtCore.Qt.ConnectionType.QueuedConnection,
+            QtCore.Q_ARG(str, text), QtCore.Q_ARG(str, color))
+
+    @QtCore.Slot(int)
+    def _set_progress_value(self, value):
+        """进度条 + 右侧百分比文字同步更新"""
+        value = max(0, min(100, int(value)))
+        self.progress_bar.setValue(value)
+        self.progress_value.setText(f'{value}%')
+
+    def _ui_progress(self, value):
+        """线程安全的进度更新（工作线程 -> 主线程）"""
+        value = max(0, min(100, int(value)))
+        QtCore.QMetaObject.invokeMethod(
+            self, '_set_progress_value', QtCore.Qt.ConnectionType.QueuedConnection,
+            QtCore.Q_ARG(int, value))
+
+    # ---------- 公共小工具 ----------
+
+    @staticmethod
+    def _esptool_cmd(name):
+        """esptool 5.x 起子命令与取值改为连字符形式（write_flash -> write-flash）"""
         try:
-            port = self.port_combo.currentData() or self.port_combo.currentText()
-            baud = int(self.baud_combo.currentText())
-            
-            self.ser = serial.Serial(port=port, baudrate=baud, timeout=0.2)
-            self.running = True
-            self.reconnecting = False
-            self.last_port = port
-            self.last_baud = baud
-            
-            # 启动接收线程
-            threading.Thread(target=self._recv_loop, daemon=True).start()
-            
-            self._log_operation(f'串口已打开: {port} @ {baud}', 'green')
-            self.open_btn.setText('关闭串口')
-            self.status_label.setText('已连接')
-            self.status_label.setStyleSheet('color: green; font-weight: bold;')
-            
-            # 禁用配置控件
-            self.port_combo.setEnabled(False)
-            self.baud_combo.setEnabled(False)
-            self.refresh_btn.setEnabled(False)
-            
-            # 启用功能按钮
-            self.reset_btn.setEnabled(True)
-            self.erase_btn.setEnabled(True)
-            self.flash_btn.setEnabled(True)
-            
-        except Exception as e:
-            self._log_operation(f'打开串口失败: {e}', 'red')
+            major = int(str(ESPTOOL_VERSION).split('.')[0])
+        except (ValueError, TypeError):
+            major = 4
+        return name.replace('_', '-') if major >= 5 else name
 
-    def _close_serial(self):
-        self.running = False
-        self.reconnecting = False
+    def _esptool_common_args(self):
+        """esptool 的连接参数前缀（芯片 / 串口 / 波特率 / 复位方式）"""
+        return ['--chip', self.chip_combo.currentData() or 'auto',
+                '--port', self._current_port(),
+                '--baud', self.baud_combo.currentText(),
+                '--before', self._esptool_cmd('default_reset'),
+                '--after', self._esptool_cmd('hard_reset')]
+
+    @staticmethod
+    def _format_addr(text):
+        """把用户输入的地址规范成 0x 开头的十六进制；非法返回 None"""
+        t = (text or '').strip().lower()
+        if not t:
+            return None
+        if t.startswith('0x'):
+            t = t[2:]
         try:
-            if self.ser:
-                self.ser.close()
-        except Exception:
-            pass
-        self.ser = None
-        
-        self._log_operation('串口已关闭', 'blue')
-        self.open_btn.setText('打开串口')
-        self.status_label.setText('未连接')
-        self.status_label.setStyleSheet('color: red; font-weight: bold;')
-        
-        # 启用配置控件
-        self.port_combo.setEnabled(True)
-        self.baud_combo.setEnabled(True)
-        self.refresh_btn.setEnabled(True)
-        
-        # 禁用功能按钮
-        self.reset_btn.setEnabled(False)
-        self.erase_btn.setEnabled(False)
-        self.flash_btn.setEnabled(False)
+            return '0x%x' % int(t, 16)
+        except ValueError:
+            return None
 
-    def _recv_loop(self):
-        """串口接收循环"""
-        while self.running and self.ser:
-            try:
-                data = self.ser.read(4096)
-                if data:
-                    self._log_serial(data)
-            except Exception as e:
-                if self.running:
-                    self._log_operation(f'串口异常断开: {e}', 'red')
-                    # 串口异常，启动重连
-                    QtCore.QMetaObject.invokeMethod(
-                        self,
-                        "_start_reconnect",
-                        QtCore.Qt.ConnectionType.QueuedConnection
-                    )
-                break
+    def _set_busy(self, busy):
+        """操作期间锁定控件，避免重复触发"""
+        self.flashing = busy
+        for w in (self.flash_btn, self.erase_btn, self.detect_btn,
+                  self.refresh_btn,
+                  self.port_combo, self.baud_combo, self.chip_combo):
+            w.setEnabled(not busy)
+        for row in self.flash_rows:
+            row['browse_btn'].setEnabled(not busy)
 
-    @QtCore.Slot()
-    def _start_reconnect(self):
-        """开始重连流程"""
-        print('_start_reconnect ')
-        if not self.running or self.reconnecting:
-            return
-        
-        # 检查是否启用自动重连
-        if not self.auto_reconnect_cb.isChecked():
-            print('串口已断开，自动重连已禁用')
-            self._log_operation('串口已断开，自动重连已禁用', 'red')
-            # 停止运行标志
-            self.running = False
-            # 关闭串口
-            try:
-                if self.ser:
-                    self.ser.close()
-            except Exception:
-                pass
-            self.ser = None
-            # 在主线程中更新UI
-            QtCore.QMetaObject.invokeMethod(
-                self,
-                "_update_ui_disconnected",
-                QtCore.Qt.ConnectionType.QueuedConnection
-            )
-            return
-        
-        self.reconnecting = True
-        self._log_operation('开始尝试重连...', 'blue')
-        self.status_label.setText('重连中...')
-        self.status_label.setStyleSheet('color: orange; font-weight: bold;')
-        
-        # 关闭当前串口
-        try:
-            if self.ser:
-                self.ser.close()
-        except Exception:
-            pass
-        self.ser = None
-        
-        # 启动重连线程
-        threading.Thread(target=self._reconnect_loop, daemon=True).start()
-
-    @QtCore.Slot()
-    def _update_ui_disconnected(self):
-        """更新UI为断开状态"""
-        self.open_btn.setText('打开串口')
-        self.status_label.setText('未连接')
-        self.status_label.setStyleSheet('color: red; font-weight: bold;')
-        
-        # 启用配置控件
-        self.port_combo.setEnabled(True)
-        self.baud_combo.setEnabled(True)
-        self.refresh_btn.setEnabled(True)
-        
-        # 禁用功能按钮
-        self.reset_btn.setEnabled(False)
-        self.erase_btn.setEnabled(False)
-        self.flash_btn.setEnabled(False)
-
-    def _reconnect_loop(self):
-        """重连循环"""
-        retry_count = 0
-        while self.running and self.reconnecting:
-            retry_count += 1
-            try:
-                # 尝试重新打开串口
-                self.ser = serial.Serial(port=self.last_port, baudrate=self.last_baud, timeout=0.2)
-                
-                # 重连成功
-                QtCore.QMetaObject.invokeMethod(
-                    self,
-                    "_reconnect_success",
-                    QtCore.Qt.ConnectionType.QueuedConnection
-                )
-                return
-                
-            except Exception as e:
-                # 每5次尝试记录一次日志，避免刷屏
-                if retry_count % 5 == 1:
-                    QtCore.QMetaObject.invokeMethod(
-                        self,
-                        "_log_operation",
-                        QtCore.Qt.ConnectionType.QueuedConnection,
-                        QtCore.Q_ARG(str, f'重连尝试 {retry_count}: {e}'),
-                        QtCore.Q_ARG(str, 'orange')
-                    )
-                time.sleep(1)  # 等待1秒后重试
-
-    @QtCore.Slot()
-    def _reconnect_success(self):
-        """重连成功"""
-        if not self.running:
-            return
-        
-        self.reconnecting = False
-        self._log_operation(f'重连成功: {self.last_port} @ {self.last_baud}', 'green')
-        self.status_label.setText('已连接')
-        self.status_label.setStyleSheet('color: green; font-weight: bold;')
-        
-        # 启动新的接收线程
-        threading.Thread(target=self._recv_loop, daemon=True).start()
+    # ---------- 文件选择 ----------
 
     def _browse_bin_file(self, idx: int):
         """浏览选择bin文件"""
@@ -496,181 +498,259 @@ class ESP32FlashTab(QtWidgets.QWidget):
         )
         if file_path:
             self.flash_rows[idx]['bin_edit'].setText(file_path)
-            self._log_operation(f'选择文件[{idx+1}]: {file_path}', 'blue')
+            self._set_hint(f'选择文件[{idx + 1}]: {file_path}', 'gray')
 
-    def _reset_device(self):
-        """重启设备"""
-        if not self.ser:
-            self._log_operation('错误: 串口未打开', 'red')
-            return
-        
-        try:
-            self._log_operation('正在重启设备...', 'blue')
-            # ESP32重启：拉低EN引脚
-            self.ser.setDTR(False)
-            self.ser.setRTS(True)
-            time.sleep(0.1)
-            self.ser.setRTS(False)
-            self._log_operation('设备重启完成', 'green')
-        except Exception as e:
-            self._log_operation(f'重启失败: {e}', 'red')
+    # ---------- 烧录 / 擦除 ----------
 
     def _erase_flash(self):
-        """擦除Flash"""
-        if not self.ser:
-            self._log_operation('错误: 串口未打开', 'red')
+        """擦除 Flash（无需先打开串口）"""
+        if not self._current_port():
+            self._set_hint('错误: 未选择串口', 'red')
             return
-        
+
         reply = QtWidgets.QMessageBox.question(
             self,
             '确认擦除',
             '确定要擦除Flash吗？此操作将清除所有数据！',
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
         )
-        
-        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
-            self._log_operation('开始擦除Flash...', 'blue')
-            self.progress_bar.setValue(0)
-            
-            # 在新线程中执行擦除操作
-            threading.Thread(target=self._do_erase, daemon=True).start()
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
 
-    def _do_erase(self):
-        """执行擦除操作（模拟）"""
-        try:
-            for i in range(101):
-                time.sleep(0.02)
-                QtCore.QMetaObject.invokeMethod(
-                    self.progress_bar,
-                    "setValue",
-                    QtCore.Qt.ConnectionType.QueuedConnection,
-                    QtCore.Q_ARG(int, i)
-                )
-            self._log_operation('Flash擦除完成', 'green')
-        except Exception as e:
-            self._log_operation(f'擦除失败: {e}', 'red')
+        if not ESPTOOL_AVAILABLE:
+            self._set_hint('错误: 未安装 esptool（pip install esptool）', 'red')
+            return
+
+        argv = self._esptool_common_args() + [self._esptool_cmd('erase_flash')]
+        self._run_esptool(argv, '擦除 Flash')
 
     def _flash_firmware(self):
-        """烧录固件"""
-        if not self.ser:
-            self._log_operation('错误: 串口未打开', 'red')
+        """烧录固件（无需先打开串口）"""
+        port = self._current_port()
+        if not port:
+            self._set_hint('错误: 未选择串口', 'red')
             return
-        
+
         # 收集选中的烧录任务
         tasks = []
         for i, row in enumerate(self.flash_rows):
-            if row['checkbox'].isChecked():
-                addr = row['addr_edit'].text().strip()
-                bin_path = row['bin_edit'].text().strip()
-                
-                if not addr or not bin_path:
-                    self._log_operation(f'错误: 第{i+1}行地址或文件路径为空', 'red')
-                    return
-                
-                tasks.append({
-                    'index': i + 1,
-                    'addr': addr,
-                    'path': bin_path
-                })
-        
+            if not row['checkbox'].isChecked():
+                continue
+            addr = row['addr_edit'].text().strip()
+            bin_path = row['bin_edit'].text().strip()
+            if not addr or not bin_path:
+                self._set_hint(f'错误: 第{i + 1}行地址或文件路径为空', 'red')
+                return
+            tasks.append({'index': i + 1, 'addr': addr, 'path': bin_path})
+
         if not tasks:
-            self._log_operation('错误: 请至少选择一个烧录任务', 'red')
+            self._set_hint('错误: 请至少选择一个烧录任务', 'red')
             return
-        
-        self._log_operation(f'开始烧录，共 {len(tasks)} 个文件...', 'blue')
-        self.progress_bar.setValue(0)
-        
-        # 在新线程中执行烧录操作
-        threading.Thread(target=self._do_flash, args=(tasks,), daemon=True).start()
 
-    def _do_flash(self, tasks):
-        """执行烧录操作（模拟）"""
+        if not ESPTOOL_AVAILABLE:
+            self._set_hint('错误: 未安装 esptool（pip install esptool）', 'red')
+            return
+
+        addr_args = []
+        for task in tasks:
+            addr = self._format_addr(task['addr'])
+            if addr is None:
+                self._set_hint(
+                    f'错误: 第{task["index"]}行地址格式不正确: {task["addr"]}'
+                    f'（应为 0x1000 这样的十六进制）', 'red')
+                return
+            if not os.path.isfile(task['path']):
+                self._set_hint(f'错误: 第{task["index"]}行文件不存在: {task["path"]}', 'red')
+                return
+            addr_args.extend([addr, task['path']])
+
+        flash_args = [self._esptool_cmd('write_flash'), '--flash-size', 'detect']
+        argv = self._esptool_common_args() + flash_args + addr_args
+        self._run_esptool(argv, '烧录固件')
+
+    def _detect_chip(self):
+        """读取芯片型号 / MAC / Flash 容量（esptool flash_id）"""
+        if not self._current_port():
+            self._set_hint('错误: 未选择串口', 'red')
+            return
+        if not ESPTOOL_AVAILABLE:
+            self._set_hint('错误: 未安装 esptool（pip install esptool）', 'red')
+            return
+        argv = self._esptool_common_args() + [self._esptool_cmd('flash_id')]
+        self._run_esptool(argv, '检测芯片')
+
+    # ---------- esptool 执行核心 ----------
+
+    def _run_esptool(self, argv, title):
+        """后台线程执行 esptool
+
+        串口由 esptool 自己打开，结束后自动关闭，本页不保留连接。
+        """
+        if self.flashing:
+            self._set_hint('正在执行上一个操作，请稍候', 'orange')
+            return
+
         try:
-            total_steps = len(tasks) * 100
-            current_step = 0
-            
-            for task in tasks:
-                self._log_operation(
-                    f'烧录文件[{task["index"]}]: {task["path"]} -> {task["addr"]}',
-                    'blue'
-                )
-                
-                # 模拟烧录进度
-                for i in range(100):
-                    time.sleep(0.01)
-                    current_step += 1
-                    progress = int((current_step / total_steps) * 100)
-                    QtCore.QMetaObject.invokeMethod(
-                        self.progress_bar,
-                        "setValue",
-                        QtCore.Qt.ConnectionType.QueuedConnection,
-                        QtCore.Q_ARG(int, progress)
-                    )
-                
-                self._log_operation(f'文件[{task["index"]}]烧录完成', 'green')
-            
-            self._log_operation('所有文件烧录完成！', 'green')
-            QtCore.QMetaObject.invokeMethod(
-                self.progress_bar,
-                "setValue",
-                QtCore.Qt.ConnectionType.QueuedConnection,
-                QtCore.Q_ARG(int, 100)
-            )
+            if not ESPTOOL_AVAILABLE:
+                raise ImportError('未安装 esptool（pip install esptool）')
+            runner = _load_esptool().main
         except Exception as e:
-            self._log_operation(f'烧录失败: {e}', 'red')
+            self._set_hint(f'错误: {e}', 'red')
+            return
 
-    def _log_operation(self, text: str, color: str = 'black'):
-        """记录操作日志"""
-        cursor = self.operation_log.textCursor()
-        fmt = QtGui.QTextCharFormat()
-        fmt.setForeground(QtGui.QBrush(QtGui.QColor(color)))
-        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
-        cursor.setCharFormat(fmt)
-        
-        ts = time.time()
-        tm = time.localtime(ts)
-        prefix = f"[{time.strftime('%H:%M:%S', tm)}] "
-        cursor.insertText(prefix + text + '\n')
-        
-        self.operation_log.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+        port = self._current_port()
+        if not port:
+            self._set_hint('错误: 未选择串口', 'red')
+            return
 
-    def _log_serial(self, data: bytes):
-        """记录串口日志"""
-        cursor = self.serial_log.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
-        
-        try:
-            text = data.decode('utf-8', errors='replace')
-        except Exception:
-            text = repr(data)
-        
-        cursor.insertText(text)
-        
-        if self.auto_scroll_cb.isChecked():
-            self.serial_log.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+        self._set_status(f'{title}中...', 'orange')
+        self._set_hint(f'{title}：连接 {port} @ {self.baud_combo.currentText()}')
+        self._set_busy(True)
+        self._set_progress_value(0)
 
-    def _show_serial_log_context_menu(self, pos):
-        """显示串口log右键菜单"""
-        menu = QtWidgets.QMenu(self)
-        
-        clear_action = menu.addAction('清空')
-        clear_action.triggered.connect(self.serial_log.clear)
-        
-        menu.addSeparator()
-        
-        copy_action = menu.addAction('复制')
-        copy_action.triggered.connect(self.serial_log.copy)
-        copy_action.setEnabled(self.serial_log.textCursor().hasSelection())
-        
-        select_all_action = menu.addAction('全选')
-        select_all_action.triggered.connect(self.serial_log.selectAll)
-        
-        menu.exec(self.serial_log.mapToGlobal(pos))
+        def worker():
+            import io
+
+            pct_re = re.compile(r'(\d+(?:\.\d+)?)\s*%')
+            ui_log = self._ui_log
+            ui_progress = self._ui_progress
+            collected = []          # 全量输出行，检测芯片用它解析结构化字段
+
+            class _Stream(io.TextIOBase):
+                """逐行转发 esptool 的 stdout / stderr"""
+
+                def __init__(self):
+                    super().__init__()
+                    self._buf = ''
+                    self._lock = threading.Lock()
+
+                def write(self, s):
+                    with self._lock:
+                        self._buf += s
+                        while '\n' in self._buf:
+                            line, self._buf = self._buf.split('\n', 1)
+                            self._emit(line)
+                    return len(s)
+
+                def flush(self):
+                    pass
+
+                def isatty(self):
+                    return False
+
+                def _emit(self, line):
+                    line = line.rstrip()
+                    if not line:
+                        return
+                    # 纯进度点/横线行不写日志，避免刷屏
+                    if line.strip(' .-') == '':
+                        return
+                    m = pct_re.search(line)
+                    if m:
+                        try:
+                            ui_progress(int(float(m.group(1))))
+                        except Exception:
+                            pass
+                        # esptool 的进度条行（一堆等号）不写日志
+                        if line.count('=') > 3:
+                            return
+                    collected.append(line)
+                    ui_log(line)
+
+            with self._esptool_lock:
+                old_out, old_err = sys.stdout, sys.stderr
+                stream = _Stream()
+                sys.stdout = stream
+                sys.stderr = stream
+                rc = 0
+                try:
+                    runner(argv)
+                except SystemExit as e:
+                    rc = e.code if isinstance(e.code, int) else 0
+                except Exception as e:
+                    ui_log(f'烧录异常: {e}', 'red')
+                    rc = -1
+                finally:
+                    try:
+                        sys.stdout, sys.stderr = old_out, old_err
+                    except Exception:
+                        pass
+
+            QtCore.QMetaObject.invokeMethod(
+                self, '_on_esptool_done', QtCore.Qt.ConnectionType.QueuedConnection,
+                QtCore.Q_ARG(int, rc), QtCore.Q_ARG(str, title),
+                QtCore.Q_ARG(str, '\n'.join(collected)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # esptool 输出 -> 芯片信息字段 的正则（按 esptool 5.x 实际打印格式）
+    _FIELD_PATTERNS = [
+        ('chip', r'Chip type:\s*(.+)'),
+        ('features', r'Features:\s*(.+)'),
+        ('crystal', r'Crystal frequency:\s*(.+)'),
+        ('usb', r'USB mode:\s*(.+)'),
+        ('mac', r'MAC:\s*([0-9A-Fa-f:]{11,17})'),
+        ('flash_size', r'Detected flash size:\s*(.+)'),
+        ('manufacturer', r'Manufacturer:\s*([0-9A-Fa-fxX]+)'),
+        ('device', r'Device:\s*([0-9A-Fa-fxX]+)'),
+        ('flash_mode', r'Flash type set in eFuse:\s*(.+)'),
+        ('flash_voltage', r'Flash voltage set by eFuse:\s*(.+)'),
+    ]
+
+    @QtCore.Slot(int, str, str)
+    def _on_esptool_done(self, rc, title, output=''):
+        """esptool 执行结束（主线程回调）"""
+        self.flashing = False
+        self._set_busy(False)
+        if rc == 0:
+            self._set_progress_value(100)
+            self._set_status('完成', 'green')
+            self._log_operation(f'{title}完成', 'green')
+            if title == '检测芯片':
+                self._update_chip_fields(output)
+        else:
+            self._set_progress_value(0)
+            self._set_status('失败', 'red')
+            self._log_operation(f'{title}失败（退出码 {rc}）', 'red')
+            self._log_operation('常见原因：串口被占用、开发板未进入下载模式、'
+                                '端口选错、波特率过高', 'orange')
+            if title == '检测芯片':
+                self.chip_hint_label.setText('检测失败，请检查串口后重试')
+
+    def _update_chip_fields(self, output):
+        """把 esptool 的原始输出解析成结构化字段填进「芯片信息」卡"""
+        values = {}
+        for key, pattern in self._FIELD_PATTERNS:
+            m = re.search(pattern, output, re.M)
+            if m:
+                values[key] = m.group(1).strip()
+
+        # 厂商/器件 ID 合并成一格
+        if 'manufacturer' in values or 'device' in values:
+            values['flash_id'] = (f"{values.get('manufacturer', '?')}:"
+                                  f"{values.get('device', '?')}")
+
+        filled = []
+        for key, label_widget in self.chip_fields.items():
+            text = values.get(key, '—')
+            label_widget.setText(text)
+            if text != '—':
+                filled.append(key)
+
+        if filled:
+            self.chip_hint_label.setText(
+                f"检测成功，共读取 {len(filled)} 项信息")
+        else:
+            self.chip_hint_label.setText('未解析到芯片信息（输出格式可能已变化）')
+
+    # ---------- 其它 ----------
 
     def apply_fonts(self, send_font: QtGui.QFont, recv_font: QtGui.QFont):
-        """应用字体"""
-        self.operation_log.setFont(recv_font)
-        self.serial_log.setFont(recv_font)
+        """操作日志使用接收区字体（保留终端观感的配色与行距）"""
+        f = QtGui.QFont(recv_font)
+        f.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+        f.setFixedPitch(True)
+        self.log_view.set_log_font(f)
 
     def get_config(self) -> dict:
         """获取配置"""
@@ -681,13 +761,12 @@ class ESP32FlashTab(QtWidgets.QWidget):
                 'addr': row['addr_edit'].text(),
                 'bin_path': row['bin_edit'].text()
             })
-        
+
         return {
-            'port': self.port_combo.currentData() or self.port_combo.currentText(),
+            'port': self.port_combo.currentData() or '',
             'baud': self.baud_combo.currentText(),
+            'chip': self.chip_combo.currentData() or 'auto',
             'flash_data': flash_data,
-            'auto_scroll': self.auto_scroll_cb.isChecked(),
-            'auto_reconnect': self.auto_reconnect_cb.isChecked()
         }
 
     def load_config(self, cfg: dict):
@@ -699,45 +778,45 @@ class ESP32FlashTab(QtWidgets.QWidget):
                     if self.port_combo.itemData(i) == last_port:
                         self.port_combo.setCurrentIndex(i)
                         break
-            
-            self.baud_combo.setCurrentText(str(cfg.get('baud', '115200')))
-            
+
+            self.baud_combo.setCurrentText(str(cfg.get('baud', '460800')))
+
+            chip_index = self.chip_combo.findData(cfg.get('chip', 'auto'))
+            if chip_index >= 0:
+                self.chip_combo.setCurrentIndex(chip_index)
+
             flash_data = cfg.get('flash_data', [])
             for i, data in enumerate(flash_data):
                 if i < len(self.flash_rows):
                     self.flash_rows[i]['checkbox'].setChecked(data.get('checked', False))
-                    self.flash_rows[i]['addr_edit'].setText(data.get('addr', ''))
-                    self.flash_rows[i]['bin_edit'].setText(data.get('bin_path', ''))
-            
-            self.auto_scroll_cb.setChecked(cfg.get('auto_scroll', True))
-            self.auto_reconnect_cb.setChecked(cfg.get('auto_reconnect', True))
+                    bin_path = data.get('bin_path', '')
+                    addr = data.get('addr', '')
+                    self.flash_rows[i]['bin_edit'].setText(bin_path)
+                    # 只有确实选过 bin 的行才沿用旧地址，空行统一显示默认 0x0
+                    self.flash_rows[i]['addr_edit'].setText(addr if (addr and bin_path) else '0x0')
         except Exception:
             pass
 
     def _setup_usb_monitor(self):
-        """设置 USB 设备监听"""
+        """设置 USB 设备监听（仅用于自动刷新端口列表）"""
         if WINDOWS_USB_AVAILABLE and sys.platform == 'win32':
             try:
                 self.usb_monitor = USBDeviceMonitor(self._on_usb_device_change)
                 app = QtCore.QCoreApplication.instance()
                 if app:
                     app.installNativeEventFilter(self.usb_monitor)
-                    self._log_operation('USB 设备监听已启动', 'blue')
-            except Exception as e:
-                self._log_operation(f'USB 监听启动失败: {e}', 'orange')
-    
+            except Exception:
+                pass
+
     @QtCore.Slot()
     def _on_usb_device_change(self):
-        """USB 设备变化回调"""
-        if not self.running:
-            # 只在串口未打开时自动刷新，并自动选中新设备
-            self._log_operation('检测到 USB 设备变化，自动刷新串口列表', 'blue')
-            self._refresh_ports(auto_select_new=True)
+        """USB 设备变化回调：只在空闲时静默刷新端口列表"""
+        if self.flashing:
+            return
+        self._refresh_ports(auto_select_new=True, quiet=True)
 
     def shutdown(self):
         """关闭tab"""
-        self._close_serial()
-        # 移除 USB 监听器
         if self.usb_monitor:
             try:
                 app = QtCore.QCoreApplication.instance()
@@ -745,17 +824,17 @@ class ESP32FlashTab(QtWidgets.QWidget):
                     app.removeNativeEventFilter(self.usb_monitor)
             except Exception:
                 pass
+            self.usb_monitor = None
 
     def _install_autosave_hooks(self):
         """安装自动保存钩子"""
         try:
             self.port_combo.currentIndexChanged.connect(lambda: self.changed.emit())
             self.baud_combo.currentIndexChanged.connect(lambda: self.changed.emit())
+            self.chip_combo.currentIndexChanged.connect(lambda: self.changed.emit())
             for row in self.flash_rows:
                 row['checkbox'].toggled.connect(lambda: self.changed.emit())
                 row['addr_edit'].textChanged.connect(lambda: self.changed.emit())
                 row['bin_edit'].textChanged.connect(lambda: self.changed.emit())
-            self.auto_scroll_cb.toggled.connect(lambda: self.changed.emit())
-            self.auto_reconnect_cb.toggled.connect(lambda: self.changed.emit())
         except Exception:
             pass

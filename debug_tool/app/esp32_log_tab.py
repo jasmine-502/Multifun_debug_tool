@@ -1,5 +1,6 @@
 import serial
 import serial.tools.list_ports
+import sys
 import threading
 import time
 import os
@@ -7,6 +8,24 @@ from datetime import datetime
 from PySide6 import QtWidgets, QtCore, QtGui
 
 from app.base_comm import BaseCommTab
+
+# ESP-IDF 日志级别配色，与 VS Code 终端 ANSI 调色板一致
+LOG_LEVEL_COLORS = {
+    'Error': '#f14c4c',     # bright red
+    'Warning': '#e5e510',   # yellow
+    'Info': '#0dbc79',      # green
+    'Debug': '#3b8eea',     # bright blue
+    'Verbose': '#d670d6',   # bright magenta
+}
+
+# 浅色主题（白底）：绿色/黄色/蓝色压暗一档，否则在白底上发淡看不清
+LOG_LEVEL_COLORS_LIGHT = {
+    'Error': '#a80000',
+    'Warning': '#8a7500',
+    'Info': '#0f7a3d',
+    'Debug': '#0b5cad',
+    'Verbose': '#a005a0',
+}
 
 class LogSearchHighlighter(QtGui.QSyntaxHighlighter):
     def __init__(self, document, base_size=10):
@@ -165,13 +184,7 @@ class ESP32LogTab(BaseCommTab):
         self.top_vbox.addWidget(row2)
 
         # 初始化日志颜色字典
-        self.current_log_colors = {
-            'Error': '#ff0000',    # 红色
-            'Warning': '#EEBE2F',  # 橙色（原#ffa500）
-            'Info': '#50DA56',     # 绿色（原#20A826）
-            'Debug': '#0000ff',    # 蓝色
-            'Verbose': '#800080'   # 紫色
-        }
+        self.current_log_colors = dict(LOG_LEVEL_COLORS)
 
         # 查找功能已移至第一行
 
@@ -276,19 +289,9 @@ class ESP32LogTab(BaseCommTab):
         for level, checkbox in self.log_level_checks.items():
             checkbox.setChecked(log_levels.get(level, True))
         self.log_name_filter_edit.setText(cfg.get('log_name_filter', ''))
-        
-        # 加载颜色设置
-        log_colors = cfg.get('log_colors', {})
-        default_colors = {
-            'Error': '#ff0000',
-            'Warning': '#EEBE2F',
-            'Info': '#50DA56',
-            'Debug': '#0000ff',
-            'Verbose': '#800080'
-        }
-        for level in ['Error', 'Warning', 'Info', 'Debug', 'Verbose']:
-            color_value = log_colors.get(level, default_colors.get(level, '#000000'))
-            self.current_log_colors[level] = color_value
+        # 颜色不再从配置读取：颜色设置已取消，配色完全由主题决定（见 set_theme）
+        self.current_log_colors.update(
+            LOG_LEVEL_COLORS if self.ui_theme == 'dark' else LOG_LEVEL_COLORS_LIGHT)
 
     def get_config(self) -> dict:
         cfg = super().get_config()
@@ -297,7 +300,6 @@ class ESP32LogTab(BaseCommTab):
             'baudrate': self.baud_combo.currentText(),
             'log_levels': {level: checkbox.isChecked() for level, checkbox in self.log_level_checks.items()},
             'log_name_filter': self.log_name_filter_edit.text(),
-            'log_colors': self.current_log_colors.copy(),
         })
         return cfg
 
@@ -311,15 +313,10 @@ class ESP32LogTab(BaseCommTab):
         super().apply_fonts(send_font, f)
     
     def set_theme(self, theme: str):
-        """设置主题，根据主题调整错误颜色"""
-        self.ui_theme = theme
-        # 根据主题调整错误颜色
-        if theme == 'dark':
-            # 深色主题：错误使用白色字体
-            self.current_log_colors['Error'] = '#ffffff'
-        else:
-            # 浅色主题：错误使用红色字体
-            self.current_log_colors['Error'] = '#ff0000'
+        """设置主题，整套级别配色跟着主题走（颜色设置已取消，颜色固定由主题决定）"""
+        super().set_theme(theme)
+        self.current_log_colors.update(
+            LOG_LEVEL_COLORS if theme == 'dark' else LOG_LEVEL_COLORS_LIGHT)
 
     def set_auto_save(self, enable: bool):
         """设置是否自动保存日志"""
@@ -512,7 +509,7 @@ class ESP32LogTab(BaseCommTab):
                         if not text:
                             continue
 
-                        color = '#000000'  # 黑色默认
+                        color = None  # 跟随终端正文色（#cccccc）
                         level = None
                         
                         # 支持两种格式：
@@ -537,13 +534,13 @@ class ESP32LogTab(BaseCommTab):
                             level = 'Verbose'
                         
                         if level:
-                            # 从自定义颜色字典获取颜色，如果无效则使用默认黑色
-                            color_hex = self.current_log_colors.get(level, '#000000')
+                            # 从自定义颜色字典获取颜色，无效则跟随正文色
+                            color_hex = self.current_log_colors.get(level)
                             # 简单验证十六进制格式
                             if color_hex and color_hex.startswith('#') and len(color_hex) >= 4:
                                 color = color_hex
                             else:
-                                color = '#000000'
+                                color = None
 
                         if level and not self.log_level_checks[level].isChecked():
                             continue
@@ -701,6 +698,15 @@ class ESP32LogTab(BaseCommTab):
             # 停止保存
             self._stop_saving()
     
+    @staticmethod
+    def _default_log_dir():
+        """默认日志目录：源码运行在项目根/logs，打包运行在 exe 同级/logs"""
+        if getattr(sys, 'frozen', False):
+            base = os.path.dirname(sys.executable)
+        else:
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base, 'logs')
+
     def _start_saving(self, auto_start=False):
         """开始实时保存
         
@@ -719,10 +725,7 @@ class ESP32LogTab(BaseCommTab):
                 return  # 用户取消了选择
         else:
             # 自动保存：使用默认目录
-            # 创建logs目录（在程序目录下）
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.dirname(base_dir)
-            save_dir = os.path.join(project_root, 'logs')
+            save_dir = self._default_log_dir()
             os.makedirs(save_dir, exist_ok=True)
         
         # 生成文件名：ESP32_Log_YYYYMMDD_HHMMSS.txt
@@ -749,10 +752,8 @@ class ESP32LogTab(BaseCommTab):
             self._log(f'[INFO] 开始保存日志至: {self.save_filepath}', 'green')
             
         except Exception as e:
-            # 显示错误消息
-            error_msg = f'开始保存失败: {str(e)}'
-            self._log(f'[ERROR] {error_msg}', 'red')
-            QtWidgets.QMessageBox.critical(self, '保存失败', error_msg)
+            # 不弹窗打断操作，只在日志区域提示
+            self._log(f'[ERROR] 开始保存失败: {str(e)}', 'red')
     
     def _stop_saving(self):
         """停止实时保存"""
@@ -776,17 +777,13 @@ class ESP32LogTab(BaseCommTab):
 
     def _open_log_dir(self):
         """在资源管理器中打开日志保存目录"""
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(base_dir)
-        log_dir = os.path.join(project_root, 'logs')
+        log_dir = self._default_log_dir()
         os.makedirs(log_dir, exist_ok=True)
         os.startfile(log_dir)
 
     def _save_logs_once(self):
         """单次保存当前日志内容到文件"""
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(base_dir)
-        default_dir = os.path.join(project_root, 'logs')
+        default_dir = self._default_log_dir()
         os.makedirs(default_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -857,11 +854,11 @@ class ESP32LogTab(BaseCommTab):
                 level = 'Verbose'
 
             if level:
-                color_hex = self.current_log_colors.get(level, '#000000')
+                color_hex = self.current_log_colors.get(level)
                 if not (color_hex and color_hex.startswith('#') and len(color_hex) >= 4):
-                    color_hex = '#000000'
+                    color_hex = None
             else:
-                color_hex = '#000000'
+                color_hex = None
 
             self._log(text, color_hex)
 

@@ -31,8 +31,8 @@ jobs:
             apt-get install -y gcc g++ make binutils zlib1g-dev && \
             python -m pip install --upgrade pip && \
             pip install pyinstaller && \
-            pip install -r requirements.txt && \
-            python -m PyInstaller --noconfirm TcpTool.spec
+            pip install -r packaging/requirements.txt && \
+            python -m PyInstaller --noconfirm packaging/TcpTool.spec
           "
     
     - name: Upload artifact
