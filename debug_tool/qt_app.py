@@ -655,10 +655,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._save_config()
 
     # 版本管理相关方法
-    def _check_for_updates(self):
-        """检查更新"""
+    def _check_for_updates(self, force: bool = False):
+        """检查更新（force=True 绕过缓存，用于手动检查）"""
         try:
-            self.version_manager.check_for_updates()
+            self.version_manager.check_for_updates(force=force)
         except Exception as e:
             print(f"检查更新失败: {e}")
 
@@ -727,9 +727,9 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.critical(self, "更新失败", f"安装更新失败：\n{error_msg}")
 
     def _manual_check_update(self):
-        """手动检查更新"""
+        """手动检查更新（绕过缓存，直接请求 GitHub）"""
         self.statusBar().showMessage("正在检查更新...", 3000)
-        self._check_for_updates()
+        self._check_for_updates(force=True)
 
 
 def main():

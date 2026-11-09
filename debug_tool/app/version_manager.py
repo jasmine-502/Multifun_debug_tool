@@ -177,14 +177,17 @@ class VersionManager(QtCore.QObject):
         
         self.current_version = current_version
         self.repo_url = repo_url.rstrip('.git')
-        self.api_url = f"https://api.github.com/repos/liu994505261/Multifun_debug_tool/releases/latest"
+        # 从 repo_url 推导 API 地址（仓库转移后旧地址靠 GitHub 301 重定向也能通，
+        # 但不该依赖隐式行为，这里显式用传入的 repo）
+        owner_repo = self.repo_url.rstrip('/').split('github.com/')[-1]
+        self.api_url = f"https://api.github.com/repos/{owner_repo}/releases/latest"
         self.temp_dir = os.path.join(tempfile.gettempdir(), "multifun_debug_tool_update")
         self.download_thread = None
         self.update_thread = None
         
         # 缓存相关
         self.cache_file = os.path.join(self.temp_dir, "version_cache.json")
-        self.cache_duration = 7200  # 2小时缓存，减少API调用频率
+        self.cache_duration = 1800  # 30分钟缓存（手动检查会绕过缓存）
         
         # GitHub token (可选，用于提高API速率限制)
         self.github_token = self._get_github_token()
@@ -304,8 +307,15 @@ class VersionManager(QtCore.QObject):
         except Exception as e:
             self.logger.error("保存release数据到缓存失败", e)
     
-    def check_for_updates(self) -> None:
-        """检查更新（在后台线程中执行）"""
+    def check_for_updates(self, force: bool = False) -> None:
+        """检查更新（在后台线程中执行）
+
+        Args:
+            force: 强制绕过缓存重新请求 API。
+                   用户手动点"检查更新"时必须传 True，否则 2 小时缓存里
+                   存的还是旧版本号，会出现"明明发了新版却提示已是最新"。
+                   启动时的自动检查用缓存，避免每次开机都打 API。
+        """
         def _check():
             if not REQUESTS_AVAILABLE:
                 self.logger.warning("Requests library not found, skipping update check")
@@ -313,14 +323,15 @@ class VersionManager(QtCore.QObject):
                 self.check_finished.emit(False)
                 return
 
-            self.logger.log_operation_start("检查更新", current_version=self.current_version)
+            self.logger.log_operation_start("检查更新", current_version=self.current_version,
+                                            force=force)
             
             try:
-                # 首先尝试从缓存获取数据
-                release_data = self._get_cached_release_data()
+                # 首先尝试从缓存获取数据（手动检查时绕过）
+                release_data = None if force else self._get_cached_release_data()
                 
                 if release_data is None:
-                    self.logger.info("缓存不存在或已过期，从GitHub API获取数据")
+                    self.logger.info("缓存不存在/已过期/手动强制刷新，从GitHub API获取数据")
                     
                     # 缓存不存在或已过期，从API获取
                     headers = {
@@ -526,7 +537,7 @@ class VersionManager(QtCore.QObject):
         
         try:
             # 构造可能的下载链接
-            repo_name = "liu994505261/Multifun_debug_tool"
+            repo_name = self.repo_url.rstrip('/').split('github.com/')[-1]
             
             # 尝试几种常见的文件名模式
             possible_files = [
