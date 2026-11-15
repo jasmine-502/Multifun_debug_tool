@@ -83,3 +83,47 @@ export const BAUD_RATES = [
   "1000000",
   "1500000",
 ];
+
+/* ---------- 固件合并 ---------- */
+
+/** 扫描出来的一个 bin；offset 为空串表示需要用户手填 */
+export interface FwEntry {
+  offset: string;
+  path: string;
+  name: string;
+  size: number;
+  /** flasher=来自 flasher_args.json；fallback=按文件名猜的；extra=build 里多出来的 */
+  source: "flasher" | "fallback" | "extra";
+}
+
+export type FwLogLevel = "info" | "warn" | "error" | "ok";
+
+export interface FwScanLog {
+  text: string;
+  level: FwLogLevel;
+}
+
+export interface FwScan {
+  buildDir: string;
+  chip: string;
+  flashSize: string;
+  flashFreq: string;
+  version: string | null;
+  projectName: string | null;
+  entries: FwEntry[];
+  logs: FwScanLog[];
+}
+
+/** 下发给 Rust 的合并项：偏移传原文，十进制 / 十六进制由 Rust 统一解析 */
+export interface FwMergeEntryInput {
+  offset: string;
+  path: string;
+}
+
+export interface FwMergeResult {
+  output: string;
+  size: number;
+  count: number;
+  /** 条目交叠提示，后者覆盖前者 */
+  overlaps: string[];
+}

@@ -1312,6 +1312,253 @@ select:focus-visible {
   display: flex;
 }
 
+/* ==== 固件合并 ======================================================== */
+
+.fw-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fw-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.fw-row__label {
+  flex: 0 0 88px;
+  width: 88px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.fw-row__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+/* 缩进到与输入框左缘对齐 */
+.fw-note {
+  margin: 0;
+  padding-left: calc(88px + var(--space-3));
+  font-size: var(--font-size-sm);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.fw-preview {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+/* 拖放提示条：高亮表示此刻松手就会接管 */
+.fw-drop {
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  color: var(--text-faint);
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+}
+
+.fw-drop.is-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+/* Bin 列表表格 */
+
+.fw-table-wrap {
+  max-height: 360px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: auto;
+}
+
+.fw-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.fw-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-muted);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.fw-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: middle;
+}
+
+.fw-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.fw-table__col-offset {
+  width: 132px;
+}
+
+.fw-table__col-size {
+  width: 92px;
+  text-align: right;
+}
+
+.fw-table__col-actions {
+  width: 64px;
+  text-align: right;
+}
+
+.fw-offset {
+  width: 100%;
+  min-width: 104px;
+  min-height: var(--control-height-sm);
+  font-size: var(--font-size-sm);
+}
+
+.fw-file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.fw-file__name {
+  flex: 0 0 auto;
+  max-width: 40%;
+  font-weight: var(--font-weight-medium);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fw-file__tag {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.fw-file__path {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fw-size {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.fw-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.fw-empty {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--text-faint);
+}
+
+.fw-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.fw-info__item {
+  white-space: nowrap;
+}
+
+.fw-info__value {
+  font-family: var(--font-mono);
+  color: var(--text-soft);
+}
+
+/* 执行日志 */
+
+.fw-log {
+  max-height: 260px;
+  padding: var(--space-3) var(--space-4);
+  overflow: auto;
+  background: var(--term-bg);
+  border: 1px solid var(--term-border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  scrollbar-color: #3b4454 transparent;
+}
+
+.fw-log__row {
+  display: flex;
+  gap: var(--space-2);
+  color: var(--term-fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fw-log__ts {
+  flex: 0 0 auto;
+  color: var(--term-ts);
+}
+
+.fw-log--warn .fw-log__text {
+  color: var(--lv-warning);
+}
+
+.fw-log--error .fw-log__text {
+  color: var(--lv-error);
+}
+
+.fw-log--ok .fw-log__text {
+  color: var(--lv-info);
+}
+
+.fw-log__empty {
+  margin: 0;
+  color: var(--term-ts);
+}
+
 /* ==== 响应式 ========================================================== */
 
 @media (max-width: 1180px) {
@@ -1361,6 +1608,22 @@ select:focus-visible {
 
   .select {
     min-width: 140px;
+  }
+
+  /* 窄屏下配置行改成上下排列，标签不再占固定宽度 */
+  .fw-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+
+  .fw-row__label {
+    flex: none;
+    width: auto;
+  }
+
+  .fw-note {
+    padding-left: 0;
   }
 }
 

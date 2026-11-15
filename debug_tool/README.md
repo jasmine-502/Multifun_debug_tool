@@ -66,12 +66,14 @@ pip install pyinstaller
 packaging\build_exe.bat
 ```
 
-产物：`dist\TcpTool\TcpTool.exe`（**onedir 目录版**），分发时把整个 `dist\TcpTool`
-目录压缩成 zip 即可。
+产物：`dist\TcpTool.exe`（**单文件版**），分发就是这一个文件，双击即运行。
 
-> **为什么不用 --onefile 单文件？**
-> onefile 每次启动都要把 ~70MB 内容解压到 `%TEMP%`，冷启动要 3~5 秒；
-> onedir 就地运行，启动约 1 秒。这是启动速度差别最大的一个开关，比换语言更立竿见影。
+> **单文件与启动速度的取舍**
+> onefile 每次启动都要把 ~70MB 内容解压到 `%TEMP%`，冷启动 3~5 秒（杀毒实时扫描时更久）；
+> onedir 就地运行，启动约 1 秒，但要连同整个目录一起分发。
+> 默认走 onefile，图的是「下载即用」；需要极速启动时设 `set TCPTOOL_ONEDIR=1` 再打包，
+> 产物变回 `dist\TcpTool\TcpTool.exe` + 同级依赖目录。
+> 两种形态由 `TcpTool.spec` 顶部的 `ONEFILE` 开关控制，代码路径（`config.json` / `logs/` 定位）不用改。
 
 启动耗时另外两处大头（已修）：
 
@@ -79,7 +81,7 @@ packaging\build_exe.bat
 |---|---|---|---|
 | `import esptool` / `espefuse` | 0.87s | ~0 | 改为首次烧录时才导入 |
 | `import requests`（更新检查） | 1.05s | ~0 | 改成延迟代理，且检查本身在后台线程 |
-| onefile 解压 | 3~5s | 0 | 改 onedir |
+| onefile 解压 | 3~5s | 0（仅目录版） | `TCPTOOL_ONEDIR=1` 打包为 onedir，就地运行 |
 
 源码直跑（`python qt_app.py`）冷启动实测：**2.4s → 约 1.0s**。
 
@@ -193,3 +195,5 @@ pip install esptool
   移除日志颜色设置对话框；分组框标题不再被边框线压断；烧录页擦除/烧录按钮加大、
   进度条独立成行并在右侧显示百分比；新增「芯片信息」卡（检测结果解析成结构化字段，
   可选中复制）；移除加密烧录与烧密钥功能（连带不再打包 espefuse / espsecure，体积再降）
+- v2.0：打包改回单文件（`dist\TcpTool.exe`，下载即用，不再发 zip）；
+  需要 v1.6 那种启动速度时用 `TCPTOOL_ONEDIR=1` 切回目录版

@@ -20,7 +20,7 @@
 
 ## 下载
 
-前往 [Releases](https://github.com/jasmine-502/Multifun_debug_tool/releases/latest) 下载最新版 `TcpTool.zip`（Windows，onedir 免安装版），解压后运行 `TcpTool.exe` 即可。
+前往 [Releases](https://github.com/jasmine-502/Multifun_debug_tool/releases/latest) 下载最新版 `TcpTool.exe`（Windows 单文件免安装版），双击即运行，无需解压。
 
 > 打包后的 exe 已内置 esptool，无需另装 Python 或乐鑫工具。
 
@@ -35,7 +35,7 @@ Multifun_debug_tool/
 │   ├── packaging/           PyInstaller 打包配置与脚本
 │   └── README.md            详细使用文档（功能、烧录说明、故障排除）
 ├── esp_log_app/     ESP32 日志 Android 端（Kotlin + Jetpack Compose）
-└── multifun_serial/ Multifun Serial 串口工具（Tauri + React，日志 / HEX 查看）
+└── multifun_serial/ Multifun Serial 串口工具（Tauri + React，日志 / HEX / 固件合并）
 ```
 
 ## 源码运行 / 打包
@@ -48,7 +48,8 @@ pip install -r debug_tool/packaging/requirements.txt
 cd debug_tool
 python qt_app.py
 
-# Windows 打包（PyInstaller onedir）
+# Windows 打包（PyInstaller，默认产出单文件 dist\TcpTool.exe）
+# 想要启动更快的目录版：先 set TCPTOOL_ONEDIR=1
 packaging\build_exe.bat
 ```
 

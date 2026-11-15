@@ -1,6 +1,6 @@
 [package]
 name = "multifun-serial"
-version = "0.1.0"
+version = "2.0.0"
 description = "Multifun Serial 串口工具（Tauri + React；debug_tool 串口页的重写版）"
 authors = ["Multifun_debug_tool"]
 edition = "2021"

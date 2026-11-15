@@ -4,11 +4,14 @@
  * 这样只改样式时不需要编译 Rust，也能完整验收交互。
  */
 
-import { save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { tauri, type Unlisten } from "./ipc";
 import type {
   AutosaveStatus,
   ConnStatus,
+  FwMergeEntryInput,
+  FwMergeResult,
+  FwScan,
   LogBatch,
   LogLevel,
   LogLine,
@@ -56,6 +59,22 @@ export interface Backend {
   onStatus(cb: (s: ConnStatus) => void): Promise<Unlisten>;
   onPorts(cb: (p: PortInfo[]) => void): Promise<Unlisten>;
   onAutosave(cb: (s: AutosaveStatus) => void): Promise<Unlisten>;
+
+  /* ---------- 固件合并 ---------- */
+
+  /** 扫描 build 目录：优先读 flasher_args.json，回退到常见文件名 */
+  scanFirmware(root: string): Promise<FwScan>;
+  /** 按偏移拼接写盘；outputDir 为空时落到 root 目录 */
+  mergeFirmware(
+    entries: FwMergeEntryInput[],
+    root: string,
+    outputDir: string,
+    filename: string,
+  ): Promise<FwMergeResult>;
+  /** 选目录（项目根 / 输出目录），取消返回 null */
+  chooseDirectory(title: string): Promise<string | null>;
+  /** 选单个 bin 文件，取消返回 null */
+  chooseBinFile(): Promise<string | null>;
 }
 
 /* ---------------- 真实实现 ---------------- */
@@ -102,6 +121,21 @@ const realBackend: Backend = {
   onStatus: (cb) => tauri.onStatus(cb),
   onPorts: (cb) => tauri.onPorts(cb),
   onAutosave: (cb) => tauri.onAutosave(cb),
+  scanFirmware: (root) => tauri.scanFirmware(root),
+  mergeFirmware: (entries, root, outputDir, filename) =>
+    tauri.mergeFirmware(entries, root, outputDir, filename),
+  async chooseDirectory(title) {
+    const picked = await open({ title, directory: true, multiple: false });
+    return typeof picked === "string" ? picked : null;
+  },
+  async chooseBinFile() {
+    const picked = await open({
+      title: "选择 Bin 文件",
+      multiple: false,
+      filters: [{ name: "Bin 文件", extensions: ["bin"] }],
+    });
+    return typeof picked === "string" ? picked : null;
+  },
 };
 
 /* ---------------- 浏览器模拟实现 ---------------- */
@@ -339,6 +373,78 @@ const mockBackend: Backend = {
   onStatus: (cb) => subscribe(mockListeners.status, cb),
   onPorts: (cb) => subscribe(mockListeners.ports, cb),
   onAutosave: (cb) => subscribe(mockListeners.autosave, cb),
+  async scanFirmware(root) {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 260));
+    const base = root || "模拟项目";
+    return {
+      buildDir: `${base}/build`,
+      chip: "esp32p4",
+      flashSize: "16MB",
+      flashFreq: "80m",
+      version: "1.4.2",
+      projectName: "stamp_dev",
+      entries: [
+        {
+          offset: "0x0",
+          path: `${base}/build/bootloader/bootloader.bin`,
+          name: "bootloader/bootloader.bin",
+          size: 20480,
+          source: "flasher",
+        },
+        {
+          offset: "0x8000",
+          path: `${base}/build/partition_table/partition-table.bin`,
+          name: "partition_table/partition-table.bin",
+          size: 3072,
+          source: "flasher",
+        },
+        {
+          offset: "0x10000",
+          path: `${base}/build/stamp_dev.bin`,
+          name: "stamp_dev.bin",
+          size: 1441792,
+          source: "flasher",
+        },
+        {
+          offset: "",
+          path: `${base}/build/extra.bin`,
+          name: "extra.bin",
+          size: 65536,
+          source: "extra",
+        },
+      ],
+      logs: [
+        { text: `开始扫描: ${base}/build`, level: "info" },
+        { text: "发现配置文件: flasher_args.json", level: "info" },
+        { text: "已读取版本号: V1.4.2", level: "info" },
+        { text: "已读取项目名称: stamp_dev", level: "info" },
+        { text: "解析到芯片信息: esp32p4, Flash: 16MB, 频率: 80m", level: "info" },
+        { text: "找到: bootloader.bin (偏移: 0x0)", level: "info" },
+        { text: "找到: partition-table.bin (偏移: 0x8000)", level: "info" },
+        { text: "找到: stamp_dev.bin (偏移: 0x10000)", level: "info" },
+        {
+          text: "找到额外文件: extra.bin (未指定偏移地址，合并前请手动填写)",
+          level: "warn",
+        },
+        { text: "扫描完成，共添加 4 个文件。", level: "ok" },
+      ],
+    };
+  },
+  async mergeFirmware(entries, root, outputDir, filename) {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 320));
+    return {
+      output: `${outputDir || root || "模拟项目"}/${filename}`,
+      size: 0x2a0000,
+      count: entries.length,
+      overlaps: [],
+    };
+  },
+  async chooseDirectory(title) {
+    return title.includes("输出") ? "模拟项目/输出" : "模拟项目";
+  },
+  async chooseBinFile() {
+    return "模拟项目/build/extra2.bin";
+  },
 };
 
 export const backend: Backend = isTauriRuntime() ? realBackend : mockBackend;

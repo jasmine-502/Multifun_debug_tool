@@ -1,4 +1,5 @@
 mod commands;
+mod firmware_merge;
 mod log_parser;
 mod ports;
 mod serial_reader;
@@ -23,6 +24,8 @@ pub fn run() {
             commands::save_raw_snapshot,
             commands::open_log_dir,
             commands::default_log_dir,
+            commands::scan_firmware,
+            commands::merge_firmware,
         ])
         .setup(|app| {
             let state = app.state::<state::AppState>();

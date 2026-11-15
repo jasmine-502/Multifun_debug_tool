@@ -4,13 +4,20 @@
 在项目根目录或 packaging 目录下执行都可：
     python -m PyInstaller --noconfirm packaging/TcpTool.spec
 
-打包方式为 **onedir**（不是 onefile）：onefile 每次启动都要把 ~70MB 解压到
-%TEMP%，冷启动要 3~5 秒；onedir 直接就地运行，启动只需 ~0.5 秒。
-产物在 dist/TcpTool/ 目录下，分发时整个目录一起打包成 zip 即可。
+打包形态默认 **onefile**：产物是单个 dist/TcpTool.exe，下载后双击就能跑，
+不需要连同整个目录一起分发。代价是启动时要把 ~70MB 解压到 %TEMP%，
+冷启动 3~5 秒（onedir 约 1 秒）。
+
+需要快速启动（或本地反复调试）时，设环境变量切回 onedir：
+    set TCPTOOL_ONEDIR=1        # PowerShell: $env:TCPTOOL_ONEDIR='1'
+产物变为 dist/TcpTool/TcpTool.exe + 同级依赖目录。
 """
 import os
 
 from PyInstaller.utils.hooks import collect_all
+
+# 打包形态：默认单文件；TCPTOOL_ONEDIR=1 时切回目录版
+ONEFILE = os.environ.get('TCPTOOL_ONEDIR', '') != '1'
 
 # 项目根目录（spec 所在目录的上一级），不依赖当前工作目录
 ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir))
@@ -118,11 +125,7 @@ a.datas = [d for d in a.datas if _keep_data(d)]
 
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
+_EXE_KWARGS = dict(
     name='TcpTool',
     debug=False,
     bootloader_ignore_signals=False,
@@ -139,13 +142,34 @@ exe = EXE(
     icon=[os.path.join(ROOT, 'packaging', 'icon.ico')],
 )
 
-# onedir：依赖放在 exe 同级目录，避免每次启动解压
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='TcpTool',
-)
+if ONEFILE:
+    # 单文件：依赖与数据（app/、font/、Qt 插件）全部塞进 exe，运行时解压到 %TEMP%/_MEIxxxxx。
+    # 程序里所有路径都用 sys.executable 定位（config.json / logs / 更新），不落临时目录。
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        exclude_binaries=False,
+        **_EXE_KWARGS,
+    )
+else:
+    # 目录版：依赖放在 exe 同级，启动最快，适合本地调试
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        **_EXE_KWARGS,
+    )
+
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name='TcpTool',
+    )

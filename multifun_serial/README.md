@@ -1,8 +1,8 @@
 # Multifun Serial（multifun_serial）
 
 Multifun Serial 是串口日志 / 调试工具，也是 `debug_tool` 里 ESP Log tab 的 Tauri 重写版
-（现已支持通用串口）。**旧 PySide6 代码一行未动**，两个程序可以并存，
-只是不能同时打开同一个串口。
+（现已支持通用串口），并把 Qt 版的「固件合并」一并迁了过来。**旧 PySide6 代码一行未动**，
+两个程序可以并存，只是不能同时打开同一个串口。
 
 ## 1. 为什么单独一个目录
 
@@ -10,7 +10,7 @@ Multifun Serial 是串口日志 / 调试工具，也是 `debug_tool` 里 ESP Log
 |---|---|---|
 | PySide6 桌面版（全部 5 个 tab） | `debug_tool/` | 唯一稳定实现，继续维护 |
 | Android 日志端 | `esp_log_app/` | 独立 |
-| **Multifun Serial**（Tauri） | `multifun_serial/`（本目录） | 只做 ESP Log，其余 tab 占位 |
+| **Multifun Serial**（Tauri） | `multifun_serial/`（本目录） | ESP Log + 固件合并已迁移，其余 tab 占位 |
 
 目录名 `multifun_serial/`、Cargo crate `multifun-serial`、npm 包 `multifun-serial` 已统一到产品名。
 只留两处标识符按历史保留：bundle identifier `com.multifun.esplog` 与偏好键 `esp-log-console.*`——
@@ -57,7 +57,7 @@ npm run build          # 产物在 src-tauri/target/release/bundle/
 > 跑 `npm run dev` 前要先停掉 `dev:web`：两者都占 5183，
 > `vite.config.ts` 里 `strictPort: true`，端口被占会直接报错而不是悄悄换端口。
 
-Rust 侧单测（日志解析规则）：
+Rust 侧单测（日志解析规则 + 固件合并）：
 
 ```powershell
 cd src-tauri
@@ -148,6 +148,29 @@ logs/
 > 想要**无损原始字节**（而不是十六进制文本）时，用右键菜单的「导出原始数据（.bin）」，
 > 那个才是逐字节回写。
 
+### 4.4 固件合并的扫描与拼接规则
+
+```
+src-tauri/src/firmware_merge.rs    扫描 / 解析 / 拼片，全部纯函数，不依赖 Tauri
+  ├─ scan：定位 build 目录 → 读 flasher_args.json → 兜底按常见文件名猜 → 读 CMakeLists 版本 / 项目名
+  └─ merge：校验文件名与文件存在 → 按偏移排序 → 全零缓冲逐段 copy → 写盘
+```
+
+几条刻意与旧版（`tool/release_output_binV2.py` + `app/firmware_merge_tab.py`）对齐的语义：
+
+- **`flasher_args.json` 的 `flash_files` key 恒按十六进制解析**（旧版 `int(key, 16)`），带不带 `0x` 都认；
+- **表格里手填的偏移只有写了 `0x` 才按十六进制**，否则按十进制 —— 所以 `10000` 是一万，不是 `0x10000`；
+- 偏移或文件留空的行直接跳过、不算错误；偏移写错 / 文件不存在才中断并报错；
+- 合并先建 `max(offset + size)` 长度的全零缓冲，再按偏移从小到大逐段写入，**后写的覆盖先写的**，
+  重叠只提示不阻止（这正是把 `generated_assets.bin` 叠到固件尾部的用法）；
+- 允许直接选 `build` 目录，此时 `CMakeLists.txt` 从上一级找；
+- 合并后大小设了 512MB 上限，避免手填一个天文数字偏移把内存吃光（旧版没有这道闸）。
+
+页面上：项目目录可以直接拖进窗口（Tauri 的拖放事件是全局的，按当前页 `active` 门控，避免和日志页串扰）；
+输出文件名由「日期 / 版本号 / 项目名」三个开关拼成
+`merged_firmware[-项目名][-V版本][-YYYYMMDD_HHMMSS].bin`，预览用 `X.Y.Z` 占位、真正合并时才取实时时间；
+配置存 localStorage `multifun-serial.firmware.prefs.v1`，下次进来目录还在就自动扫一遍。
+
 ## 5. 与 Qt 版的对齐矩阵
 
 | 功能 | 状态 | 说明 |
@@ -175,6 +198,15 @@ logs/
 | 字体大小设置 | **未实现** | P2；当前固定 13px 等宽 |
 | 旧 `config.json` 迁移 | **未实现** | P2；当前偏好存 WebView localStorage |
 | 搜索高亮字号 +3 | **有意改动** | 变字号会破坏虚拟滚动定高，改为黄底/橙底标记 |
+| 固件合并：自动扫描 build | 已实现 | 优先 `flasher_args.json`，回退常见文件名（见 4.4） |
+| 固件合并：芯片 / Flash / 频率 | 已实现 | 读 `extra_esptool_args` 与 `flash_settings`，列表底部展示 |
+| 固件合并：版本号 / 项目名 | 已实现 | 从 `CMakeLists.txt` 的 `set(PROJECT_VER ...)` / `project(...)` 解析 |
+| 固件合并：输出文件名格式 | 已实现 | 日期 / 版本号 / 项目名三个开关，预览用 `X.Y.Z` 占位 |
+| 固件合并：表格增删改 | 已实现 | 偏移可手改、文件可换、行可增删，空行跳过 |
+| 固件合并：拖放目录 | 已实现 | Tauri 全局拖放事件，按页面 `active` 门控 |
+| 固件合并：执行日志 | 已实现 | 四色（info / warn / error / ok），最多留 500 行 |
+| 固件合并：配置持久化 | 已实现 | localStorage，替代旧版 `config.json` |
+| ESP32 烧录（esptool） | **未实现** | 合并产物可直接交给 `esptool.py write_flash 0x0 merged.bin` |
 
 ## 6. 已知限制
 
@@ -229,6 +261,7 @@ P4 开发板通常同时枚举两个口：UART 桥（日志口）与芯片原生
 
 ## 7. 下一步（按 ROI 排序）
 
+- **P2**：把合并产物接上 esptool 烧录（对齐 `esp32_flash_tab.py`），合并 + 烧录合成一条路径。
 - **P2**：导入日志文件、串口黑名单、字体设置、旧 `config.json` 首次导入。
 - **P2**：定长切包的帧头 / 帧尾校验（当前只按字节数硬切，错位后不会自动重新同步）。
 - **P2**：常用切包方案（波特率 + 策略 + 关键字）存成可复用的「会话模板」。
@@ -242,9 +275,14 @@ P4 开发板通常同时枚举两个口：UART 桥（日志口）与芯片原生
 
 | workflow | 打标签时的产物 | 用途 |
 |---|---|---|
-| `release.yml` | `TcpTool.zip` + `Multifun Serial_x.y.z_x64_*.msi` | 挂到 GitHub Release 页 |
+| `release.yml` | `TcpTool.exe` + `Multifun Serial_x.y.z_x64_*.msi` | 挂到 GitHub Release 页 |
 | `build-windows.yml` | `multifun-serial-msi` artifact | 在 Actions 页直接下载 / 验证 |
 
 MSI 由 `npm run tauri -- build --bundles msi` 产出，路径
 `src-tauri/target/release/bundle/msi/*.msi`；`.msi` 里已包含 WebView2 引导与快捷方式。
 日常 push / PR 不会编译 Rust，只有打标签或手动 `workflow_dispatch` 才跑。
+
+版本号只有一个真相源：`src-tauri/tauri.conf.json` 的 `version`。MSI 的 ProductVersion 用它，
+侧栏显示的 `v2.0.0` 也是直接 `import` 这个文件（所以 CI 里打标签改写它之后，两边自动同步）；
+`package.json` 与 `Cargo.toml` 的版本号只是跟着对齐，不参与产物命名。
+标签大小写现在都能用（`v*` 和 `V*`），手动触发时不会改写版本，MSI 就沿用文件里写死的值。

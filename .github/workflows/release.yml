@@ -2,8 +2,10 @@ name: Release
 
 on:
   push:
+    # github 的 glob 区分大小写：仓库里既有 v1.2.3 也有 V1.2.3 这类标签，两种都接
     tags:
       - 'v*'
+      - 'V*'
   release:
     types: [created, published]
 
@@ -13,10 +15,10 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.11'
     
@@ -27,35 +29,31 @@ jobs:
         pip install pyinstaller
         pip install -r packaging/requirements.txt
     
+    # spec 默认 onefile，产物就是单个 dist/TcpTool.exe
     - name: Build EXE
       working-directory: debug_tool
       run: |
         python -m PyInstaller --noconfirm packaging/TcpTool.spec
-    
-    - name: Package onedir to zip
-      working-directory: debug_tool
-      shell: pwsh
-      run: |
-        Compress-Archive -Path dist/TcpTool -DestinationPath dist/TcpTool.zip -Force
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: windows-build
-        path: debug_tool/dist/TcpTool.zip
+        path: debug_tool/dist/TcpTool.exe
+        if-no-files-found: error
 
-  # Tauri 版（multifun_serial）的 MSI 安装包，和 TcpTool.zip 一起挂到 Release。
+  # Tauri 版（multifun_serial）的 MSI 安装包，和 TcpTool.exe 一起挂到 Release。
   build-tauri-msi:
     runs-on: windows-latest
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
-        node-version: '20'
+        node-version: '22'
         cache: npm
         cache-dependency-path: multifun_serial/package-lock.json
 
@@ -71,9 +69,9 @@ jobs:
       working-directory: multifun_serial
       run: npm ci
 
-    # MSI 的版本号取自 tauri.conf.json，不对齐 tag 的话每次发版都是 0.1.0
+    # MSI 的 ProductVersion 取自 tauri.conf.json，不打标签时就用文件里写死的版本
     - name: Sync app version from tag
-      if: startsWith(github.ref, 'refs/tags/v')
+      if: ${{ github.ref_type == 'tag' }}
       working-directory: multifun_serial
       shell: pwsh
       run: |
@@ -92,7 +90,7 @@ jobs:
       run: npm run tauri -- build --bundles msi
 
     - name: Upload MSI
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: multifun-serial-msi
         path: multifun_serial/src-tauri/target/release/bundle/msi/*.msi
@@ -143,16 +141,16 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     
     - name: Download Windows artifact
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         name: windows-build
         path: artifacts
 
     - name: Download MSI artifact
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         name: multifun-serial-msi
         path: artifacts
@@ -168,11 +166,11 @@ jobs:
       run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
     
     - name: Upload to Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ steps.tag.outputs.tag || github.event.release.tag_name }}
         files: |
-          artifacts/TcpTool.zip
+          artifacts/TcpTool.exe
           artifacts/*.msi
         draft: false
         prerelease: false

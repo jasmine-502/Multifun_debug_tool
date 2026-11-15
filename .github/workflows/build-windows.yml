@@ -3,23 +3,25 @@ name: Build Windows EXE
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]
+    # 历史标签既有 v1.2.3 也有 V1.2.3，两种大小写都要能触发（github 的 glob 区分大小写）
+    tags: [ 'v*', 'V*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
-    # 打标签时发版统一交给 release.yml，这里跳过，避免同一份 PyInstaller 跑两遍
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    # 打标签时发版统一交给 release.yml，这里跳过，避免同一份 PyInstaller 跑两遍。
+    # 用 ref_type 而不是 startsWith('refs/tags/v')：后者区分大小写，V2.0.0 这类标签会漏判
+    if: ${{ github.ref_type != 'tag' }}
     runs-on: windows-latest
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.11'
     
@@ -30,38 +32,35 @@ jobs:
         pip install pyinstaller
         pip install -r packaging/requirements.txt
     
+    # spec 默认 onefile，产物就是单个 dist/TcpTool.exe
     - name: Build EXE
       working-directory: debug_tool
       run: |
         python -m PyInstaller --noconfirm packaging/TcpTool.spec
 
-    - name: Package onedir to zip
-      working-directory: debug_tool
-      shell: pwsh
-      run: |
-        Compress-Archive -Path dist/TcpTool -DestinationPath dist/TcpTool-Windows.zip -Force
-
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: TcpTool-Windows
-        path: debug_tool/dist/TcpTool-Windows.zip
+        # 单文件 exe，不再压缩；Actions 下载 artifact 时平台会自行包一层 zip
+        path: debug_tool/dist/TcpTool.exe
         if-no-files-found: error
 
   # Tauri 版（multifun_serial）的 MSI 安装包。
-  # 只在打标签（v*）或手动触发时编译，日常 push / PR 不跑，省掉一次 Rust 全量编译。
+  # 只在打标签（v* / V*）或手动触发时编译，日常 push / PR 不跑，省掉一次 Rust 全量编译。
+  # 注意：推普通提交到 main 时这个 job 会被跳过，想要 MSI 就打标签或到 Actions 页手动 Run workflow。
   build-tauri-msi:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
-        node-version: '20'
+        node-version: '22'
         cache: npm
         cache-dependency-path: multifun_serial/package-lock.json
 
@@ -77,9 +76,9 @@ jobs:
       working-directory: multifun_serial
       run: npm ci
 
-    # MSI 的版本号取自 tauri.conf.json，不对齐 tag 的话每次发版都是 0.1.0
+    # MSI 的 ProductVersion 取自 tauri.conf.json，不打标签时就用文件里写死的版本
     - name: Sync app version from tag
-      if: startsWith(github.ref, 'refs/tags/v')
+      if: ${{ github.ref_type == 'tag' }}
       working-directory: multifun_serial
       shell: pwsh
       run: |
@@ -98,7 +97,7 @@ jobs:
       run: npm run tauri -- build --bundles msi
 
     - name: Upload MSI
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: multifun-serial-msi
         path: multifun_serial/src-tauri/target/release/bundle/msi/*.msi

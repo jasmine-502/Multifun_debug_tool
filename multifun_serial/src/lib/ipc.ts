@@ -8,6 +8,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AutosaveStatus,
   ConnStatus,
+  FwMergeEntryInput,
+  FwMergeResult,
+  FwScan,
   LogBatch,
   PortInfo,
   SplitMode,
@@ -75,4 +78,16 @@ export const tauri = {
 
   onAutosave: (cb: (s: AutosaveStatus) => void) =>
     listen<AutosaveStatus>(EVT_AUTOSAVE, (e) => cb(e.payload)),
+
+  /* ---------- 固件合并 ---------- */
+
+  scanFirmware: (root: string) => invoke<FwScan>("scan_firmware", { root }),
+
+  /** 偏移已在 TS 侧解析成数字；outputDir 为空时由 Rust 落到 root */
+  mergeFirmware: (
+    entries: FwMergeEntryInput[],
+    root: string,
+    outputDir: string,
+    filename: string,
+  ) => invoke<FwMergeResult>("merge_firmware", { entries, root, outputDir, filename }),
 };

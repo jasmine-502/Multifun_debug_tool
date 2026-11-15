@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
 
+use crate::firmware_merge;
 use crate::ports::{self, PortInfo};
 use crate::serial_reader::{self, AutosaveStatus, OpenRequest, SplitMode};
 use crate::state::{AppState, Session};
@@ -239,4 +240,23 @@ fn reveal(dir: &Path) -> std::io::Result<()> {
         .arg(dir)
         .spawn()
         .map(|_| ())
+}
+
+/* ---------------- 固件合并 ---------------- */
+
+/// 扫 build 目录：优先 flasher_args.json，回退到常见文件名，顺便取版本号 / 项目名
+#[tauri::command]
+pub fn scan_firmware(root: String) -> Result<firmware_merge::ScanResult, String> {
+    firmware_merge::scan(&root)
+}
+
+/// 按偏移拼接，写到 output_dir（留空则用项目根目录）/ filename
+#[tauri::command]
+pub fn merge_firmware(
+    entries: Vec<firmware_merge::MergeEntry>,
+    root: String,
+    output_dir: String,
+    filename: String,
+) -> Result<firmware_merge::MergeResult, String> {
+    firmware_merge::merge(&entries, &root, &output_dir, &filename)
 }

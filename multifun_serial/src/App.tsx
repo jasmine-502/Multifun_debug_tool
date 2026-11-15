@@ -10,6 +10,10 @@ import {
   Zap,
 } from "lucide-react";
 import EspLogPage from "./features/esp-log/EspLogPage";
+import FirmwareMergePage from "./features/firmware-merge/FirmwareMergePage";
+// 版本号只有 tauri.conf.json 一个真相源：MSI 的 ProductVersion 和侧栏显示都读它，
+// CI 打标签时会改写这个文件，所以两边不会对不上
+import tauriConfig from "../src-tauri/tauri.conf.json";
 import { backend } from "./lib/backend";
 
 type ViewId = "esp-log" | "tcp" | "udp" | "flash" | "merge";
@@ -26,7 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "tcp", label: "TCP 客户端", icon: Network, ready: false },
   { id: "udp", label: "UDP 通信", icon: Waves, ready: false },
   { id: "flash", label: "ESP32 烧录", icon: Zap, ready: false },
-  { id: "merge", label: "固件合并", icon: Layers, ready: false },
+  { id: "merge", label: "固件合并", icon: Layers, ready: true },
 ];
 
 const THEME_KEY = "esp-log-console.theme";
@@ -68,7 +72,7 @@ export default function App() {
           </span>
           <span className="sidebar__brand-text">
             <span className="sidebar__brand-name">Multifun Serial</span>
-            <span className="sidebar__brand-version">v0.1.0 · tauri</span>
+            <span className="sidebar__brand-version">v{tauriConfig.version} · tauri</span>
           </span>
         </div>
 
@@ -117,7 +121,11 @@ export default function App() {
         <div className="view-host" style={{ display: view === "esp-log" ? undefined : "none" }}>
           <EspLogPage />
         </div>
-        {view !== "esp-log" && <Placeholder label={current.label} />}
+        {/* 合并页同样常驻：切页回来时列表、日志和拖放监听都还在 */}
+        <div className="view-host" style={{ display: view === "merge" ? undefined : "none" }}>
+          <FirmwareMergePage active={view === "merge"} />
+        </div>
+        {view !== "esp-log" && view !== "merge" && <Placeholder label={current.label} />}
       </main>
     </div>
   );
