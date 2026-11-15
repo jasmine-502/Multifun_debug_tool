@@ -280,6 +280,8 @@ P4 开发板通常同时枚举两个口：UART 桥（日志口）与芯片原生
 
 MSI 由 `npm run tauri -- build --bundles msi` 产出，路径
 `src-tauri/target/release/bundle/msi/*.msi`；`.msi` 里已包含 WebView2 引导与快捷方式。
+安装界面语言由 `bundle > windows > wix > language` 控制（现为 `zh-CN`，ProductLanguage 2052），
+产物文件名会带 `_zh-CN`；默认不写这个键就是 `en-US`。
 日常 push / PR 也会编译（带 rust-cache，增量一两分钟）；打标签时由 `release.yml` 统一构建，
 `build-windows.yml` 里的同一个 job 自动跳过，不会重复编两遍。
 `build-windows.yml` 的两个 job 是串行的：先编 MSI（Rust 编译最容易出问题，先暴露），
