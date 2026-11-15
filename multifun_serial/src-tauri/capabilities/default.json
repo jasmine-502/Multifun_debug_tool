@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Multifun Serial 默认权限：核心能力 + 保存/选择目录对话框",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

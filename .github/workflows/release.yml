@@ -44,6 +44,60 @@ jobs:
         name: windows-build
         path: debug_tool/dist/TcpTool.zip
 
+  # Tauri 版（multifun_serial）的 MSI 安装包，和 TcpTool.zip 一起挂到 Release。
+  build-tauri-msi:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: npm
+        cache-dependency-path: multifun_serial/package-lock.json
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Rust
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: multifun_serial/src-tauri -> target
+
+    - name: Install frontend dependencies
+      working-directory: multifun_serial
+      run: npm ci
+
+    # MSI 的版本号取自 tauri.conf.json，不对齐 tag 的话每次发版都是 0.1.0
+    - name: Sync app version from tag
+      if: startsWith(github.ref, 'refs/tags/v')
+      working-directory: multifun_serial
+      shell: pwsh
+      run: |
+        $tag = $env:GITHUB_REF_NAME -replace '^v', ''
+        if ($tag -match '^\d+\.\d+\.\d+') {
+          $env:APP_VERSION = $Matches[0]
+          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version=process.env.APP_VERSION;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');"
+          Write-Host "app version -> $env:APP_VERSION"
+        } else {
+          Write-Host "tag '$tag' is not semver, keep the version in tauri.conf.json"
+        }
+
+    # beforeBuildCommand（npm run build:web）会顺带跑 tsc + vite build
+    - name: Build MSI
+      working-directory: multifun_serial
+      run: npm run tauri -- build --bundles msi
+
+    - name: Upload MSI
+      uses: actions/upload-artifact@v4
+      with:
+        name: multifun-serial-msi
+        path: multifun_serial/src-tauri/target/release/bundle/msi/*.msi
+        if-no-files-found: error
+
   # build-linux-arm:
   #   runs-on: ubuntu-latest
   #   
@@ -82,7 +136,7 @@ jobs:
   #       path: debug_tool/dist/TcpTool-Linux-ARM
 
   release:
-    needs: [build-windows]
+    needs: [build-windows, build-tauri-msi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -95,6 +149,12 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: windows-build
+        path: artifacts
+
+    - name: Download MSI artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: multifun-serial-msi
         path: artifacts
     
     # - name: Download Linux ARM artifact
@@ -113,6 +173,7 @@ jobs:
         tag_name: ${{ steps.tag.outputs.tag || github.event.release.tag_name }}
         files: |
           artifacts/TcpTool.zip
+          artifacts/*.msi
         draft: false
         prerelease: false
         generate_release_notes: true

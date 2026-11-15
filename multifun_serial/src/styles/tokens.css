@@ -1,0 +1,140 @@
+/*
+ * 设计令牌唯一真相源。
+ * 外壳语言移植自 HachimoDock `pc/src/styles.css :root`（浅色设备控制台 + 单一品牌橙）；
+ * 日志终端配色移植自 debug_tool `app/theme.py`（VS Code 输出面板观感），保证两个版本观感连续。
+ * 业务组件不得自创十六进制色值或间距。
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- 字体 ---- */
+  --font-sans: "MiSans", "HarmonyOS Sans SC", "PingFang SC", "Noto Sans CJK SC",
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", "Menlo",
+    "Source Code Pro", monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-base: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --line-height-tight: 1.25;
+  --line-height-base: 1.5;
+
+  /* ---- 画布与表面 ---- */
+  --bg: #f7f8fa;
+  --bg-soft: #fbfbfc;
+  --surface: #ffffff;
+  --surface-muted: #f4f5f7;
+  --surface-sunken: #eef0f3;
+  --ambient-accent: rgba(255, 103, 0, 0.045);
+
+  /* ---- 边界 ---- */
+  --line: #e6e7eb;
+  --line-soft: #eff0f3;
+  --line-strong: #d8dadf;
+
+  /* ---- 文字 ---- */
+  --text: #14151a;
+  --text-soft: #4b5060;
+  --text-muted: #7c818d;
+  --text-faint: #a4a8b1;
+  --text-on-accent: #ffffff;
+
+  /* ---- 品牌与语义 ---- */
+  --accent: #ff6700;
+  --accent-strong: #e25600;
+  --accent-soft: #fff1e6;
+  --accent-ring: rgba(255, 103, 0, 0.18);
+  --success: #15a466;
+  --success-soft: #e6f6ed;
+  --info: #2576cb;
+  --info-soft: #e6f0fa;
+  --warning: #c97a17;
+  --warning-soft: #fbf1de;
+  --danger: #d24a3d;
+  --danger-soft: #fae8e6;
+
+  /* ---- 节奏与几何 ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+  --control-height-sm: 34px;
+  --control-height-md: 40px;
+  --control-height-lg: 44px;
+  --shadow-xs: 0 1px 2px rgba(20, 21, 26, 0.04);
+  --shadow-sm: 0 1px 3px rgba(20, 21, 26, 0.06), 0 1px 2px rgba(20, 21, 26, 0.04);
+  --shadow-md: 0 4px 12px rgba(20, 21, 26, 0.06), 0 2px 4px rgba(20, 21, 26, 0.04);
+  --shadow-lg: 0 12px 32px rgba(20, 21, 26, 0.08), 0 4px 12px rgba(20, 21, 26, 0.04);
+
+  /* ---- 布局与动效 ---- */
+  --sidebar-width: 236px;
+  --content-max-width: 1280px;
+  --page-padding-inline: clamp(16px, 2vw, 28px);
+  --motion-fast: 140ms;
+  --motion-standard: 180ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --focus-ring: 0 0 0 4px var(--accent-ring);
+  --disabled-opacity: 0.52;
+  --z-modal: 1000;
+  --z-toast: 1100;
+
+  /* ---- 日志终端（深浅主题共用同一套，与 Qt 版一致） ---- */
+  --term-bg: #181d27;
+  --term-bg-raised: #1f2532;
+  --term-fg: #cccccc;
+  --term-ts: #666666;
+  --term-border: #2b3240;
+  --term-selection: #264f78;
+  --lv-error: #f14c4c;
+  --lv-warning: #e5e510;
+  --lv-info: #0dbc79;
+  --lv-debug: #3b8eea;
+  --lv-verbose: #d670d6;
+  --term-row-height: 22px;
+  --hl-bg: #f9c11a;
+  --hl-fg: #14151a;
+  --hl-active-bg: #ff6700;
+  --hl-active-fg: #ffffff;
+}
+
+/* 深色外壳：日志终端本来就是深色，这里只换壳层 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --bg-soft: #12161d;
+  --surface: #161b23;
+  --surface-muted: #1b212b;
+  --surface-sunken: #10151c;
+  --ambient-accent: rgba(255, 103, 0, 0.08);
+  --line: #262d38;
+  --line-soft: #1f252f;
+  --line-strong: #333c49;
+  --text: #e7eaf0;
+  --text-soft: #b6bdc9;
+  --text-muted: #8a929f;
+  --text-faint: #656d7a;
+  --accent-soft: rgba(255, 103, 0, 0.14);
+  --success-soft: rgba(21, 164, 102, 0.16);
+  --info-soft: rgba(37, 118, 203, 0.18);
+  --warning-soft: rgba(201, 122, 23, 0.18);
+  --danger-soft: rgba(210, 74, 61, 0.18);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.36);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.44);
+  --term-border: #2b3240;
+}

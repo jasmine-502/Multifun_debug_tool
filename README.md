@@ -34,7 +34,8 @@ Multifun_debug_tool/
 │   ├── tool/                固件合并核心逻辑
 │   ├── packaging/           PyInstaller 打包配置与脚本
 │   └── README.md            详细使用文档（功能、烧录说明、故障排除）
-└── esp_log_app/     ESP32 日志 Android 端（Kotlin + Jetpack Compose）
+├── esp_log_app/     ESP32 日志 Android 端（Kotlin + Jetpack Compose）
+└── multifun_serial/ Multifun Serial 串口工具（Tauri + React，日志 / HEX 查看）
 ```
 
 ## 源码运行 / 打包

@@ -1,0 +1,250 @@
+# Multifun Serial（multifun_serial）
+
+Multifun Serial 是串口日志 / 调试工具，也是 `debug_tool` 里 ESP Log tab 的 Tauri 重写版
+（现已支持通用串口）。**旧 PySide6 代码一行未动**，两个程序可以并存，
+只是不能同时打开同一个串口。
+
+## 1. 为什么单独一个目录
+
+| 端 | 目录 | 状态 |
+|---|---|---|
+| PySide6 桌面版（全部 5 个 tab） | `debug_tool/` | 唯一稳定实现，继续维护 |
+| Android 日志端 | `esp_log_app/` | 独立 |
+| **Multifun Serial**（Tauri） | `multifun_serial/`（本目录） | 只做 ESP Log，其余 tab 占位 |
+
+目录名 `multifun_serial/`、Cargo crate `multifun-serial`、npm 包 `multifun-serial` 已统一到产品名。
+只留两处标识符按历史保留：bundle identifier `com.multifun.esplog` 与偏好键 `esp-log-console.*`——
+改它们会让 WebView2 数据目录换位置，本地保存的串口 / 波特率偏好会丢。
+
+拆开的好处是验证成本低：样式和性能不达标时只需要删掉这一个目录，不会污染旧工程。
+
+## 2. 视觉与交互基线
+
+- **外壳**移植 HachimoDock 的设计令牌：浅色中性画布 + 单一品牌橙 `#ff6700`、
+  4/8/12/16 圆角、34/40/44 控件高度、`card` 单层卡片、140/180ms 动效。
+  令牌全部在 `src/styles/tokens.css`，业务样式不得自创色值。
+- **日志区**沿用 `debug_tool/app/theme.py` 的 VS Code 终端配色：
+  `#181d27` 背景 / `#cccccc` 正文 / 五级日志色（`#f14c4c` `#e5e510` `#0dbc79` `#3b8eea` `#d670d6`）。
+  这样老用户切过来不需要重新认识颜色。
+- 组件契约与 HachimoDock 一致：`Button`（primary/secondary/ghost/danger/icon）、`Card`、
+  `Switch`（38×22 轨道）、`PageShell`。一页只允许一个 `primary`。
+- 日志区的正文色与时间戳色可由用户在「日志颜色」弹窗里覆盖：运行时写
+  `document.documentElement` 上的 `--term-fg` / `--term-ts` 内联变量，
+  `tokens.css` 本身不动，各级别色也只在该用户勾选了「统一正文颜色」时才被压掉。
+
+## 3. 运行
+
+```powershell
+cd multifun_serial
+npm install
+
+# 只调 UI（浏览器，日志是模拟数据，不需要编译 Rust）
+npm run dev:web        # http://localhost:5183
+
+# 真机联调（需要 WebView2 + Rust 工具链 + MSVC）
+npm run dev
+
+# 出包
+npm run build          # 产物在 src-tauri/target/release/bundle/
+```
+
+> **`dev:web` 与 `dev` 的区别不是可选的两种风格，而是两个不同的程序。**
+> `dev:web` 跑在普通浏览器里，没有 Tauri 运行时，后端自动切换成 `mock`：
+> 串口列表是假的（COM7/COM3），日志是按模板凭空生成的，页面上会有橙色提示条、
+> 按钮写「打开模拟串口」、状态栏写「未连接（模拟模式）」。
+> **只有 `npm run dev` 会真正打开物理串口。**
+>
+> 跑 `npm run dev` 前要先停掉 `dev:web`：两者都占 5183，
+> `vite.config.ts` 里 `strictPort: true`，端口被占会直接报错而不是悄悄换端口。
+
+Rust 侧单测（日志解析规则）：
+
+```powershell
+cd src-tauri
+cargo test
+```
+
+## 4. 架构要点
+
+```
+串口数据
+  └─ Rust 读线程（serialport，100ms 超时）
+       ├─ 切包：CR/LF（ESP 固定）或 空闲超时 / 定长（通用串口）
+       ├─ 每个包同时产出 raw（lossy 文本）与 hex（原始字节，无损）
+       ├─ log_parser：级别 / 日志名（仅 ESP 模式；通用模式恒为 None）
+       ├─ 过滤（级别 + 日志名白名单 / 行内关键字）在 Rust 侧完成
+       ├─ 自动保存：按当前视图格式落盘（文本 / 十六进制），格式变了自动换文件
+       └─ 每 50 行或 33ms 发一批 `esp://log-batch`
+            └─ 前端 logStore（2 万行环形缓冲，rAF 合并通知）
+                 └─ LogTerminal 虚拟滚动（定高 22px，只渲染可视窗口）
+```
+
+三条硬约束，缺一条高速日志就会卡：
+
+1. **Rust 侧批量 emit**，不允许一行一次 IPC；
+2. **前端环形缓冲**（`MAX_LINES = 20000`），不是无限追加 DOM；
+3. **窗口化渲染**，DOM 常驻节点 < 100，与总行数无关。
+
+安全约束：日志内容一律用 React 文本节点渲染，禁止 `innerHTML`；`tauri.conf.json` 的 CSP
+不放开 `unsafe-eval`。
+
+### 4.1 两种数据源：ESP-IDF 日志 / 通用串口
+
+不是所有接进来的都是 ESP32。连接区第一行的「数据源」决定了整条链路怎么解释字节，
+`open_log` 的 `generic` 参数就是它的开关：
+
+| | ESP-IDF 日志（默认） | 通用串口 |
+|---|---|---|
+| 切包 | 固定只认 CR / LF | 行尾 / 空闲超时 / 定长，三选一 |
+| 级别与日志名 | `log_parser` 解析 `I (123) TAG:` 前缀 | 不解析，级别恒为 `None`，不显示级别 chips |
+| 过滤框语义 | 日志名精确白名单 | 行内包含任一关键字（ASCII 不区分大小写） |
+| 打开时复位 | 默认开启 | 默认关闭 |
+| 6 秒无数据提示 | 提示检查复位 / 换口 | 提示检查波特率 / TX-RX 交叉 |
+
+切包策略（`SplitMode`）只在通用模式下可选，连接后置灰：
+
+- **按行尾（`crlf`）**：遇 `\r` 或 `\n` 切，CRLF 算一个。AT 指令、NMEA、大多数文本协议用这个。
+- **按空闲超时（`idle`）**：不靠分隔符，串口静默 50ms 就把攒到的字节整段切出。
+  适合“一次性吐一串、然后停一会”的设备。阈值取 50ms 是因为读超时本身是 100ms，
+  再小也观察不到。
+- **按固定字节数（`fixed`）**：攒够 N 字节切一包，适合定长帧。注意它**不校验帧头**，
+  起始字节错位后会一直错位，需要重新打开串口。
+
+### 4.2 HEX 为什么必须由 Rust 生成
+
+`String::from_utf8_lossy` 是不可逆的：非法字节变成 `U+FFFD`（`EF BF BD`），
+切包时行尾的 `\r\n` 也被扔掉了。拿 `raw` 再 encode 出来的 HEX 只是“看着像十六进制”，
+用它分析报文或导出 `.bin` 会得到错误的字节。
+
+所以 `LogLine.hex` 在切包的那一刻直接从原始字节切片生成（含行尾），
+HEX 视图与右键菜单的「导出原始数据（.bin）」都基于它，
+后端 `save_raw_snapshot` 逐行解码后按字节写文件，全程无损。
+
+代价是“查找 / 高亮”仍跑在 `raw` 上：二进制报文用关键字搜不到，
+只能用 HEX 视图肉眼比对，或直接导出 `.bin` 用专业工具分析。
+
+### 4.3 自动保存的目录布局
+
+```
+logs/
+  2026-11/
+    ESP32_Log_20261115_143022.txt
+    ESP32_Log_20261115_161540_hex.txt
+    Serial_Log_20261115_163810.txt
+  2026-12/
+    ESP32_Log_20261201_090512.txt
+```
+
+- **按年月分目录**（`YYYY-MM`）：单目录堆上千个文件后 Windows 资源管理器打开会明显卡顿；
+- **文件名前缀区分数据源**：ESP 模式 `ESP32_Log_`、通用串口 `Serial_Log_`；
+- **写入格式跟随屏幕**：HEX 视图下写十六进制文本（`.txt` 直接能读），
+  文件名带 `_hex`；时间戳开关打开时每行前面多一段 `HH:MM:SS.mmm`；
+- **切换格式会换文件**：同一个文件里前半段文本、后半段十六进制谁也读不了，
+  所以 HEX / 时间戳一变，旧文件正常收尾（写结束时间）并另开一个；
+- 月份在**创建文件那一刻**确定，跨月的长会话仍写在同一目录，一次连接归一次归档；
+- 「日志目录」按钮打开的是 `logs/` 根目录，不是当月子目录；
+- 手动指定过保存目录时，年月子目录建在你指定的目录下面。
+
+> 想要**无损原始字节**（而不是十六进制文本）时，用右键菜单的「导出原始数据（.bin）」，
+> 那个才是逐字节回写。
+
+## 5. 与 Qt 版的对齐矩阵
+
+| 功能 | 状态 | 说明 |
+|---|---|---|
+| 串口枚举 + 热插拔 | 已实现 | 500ms 轮询，COM 号降序，带 VID/PID |
+| 通用串口（非 ESP 格式） | 已实现 | 不解析前缀，切包三选一，关键字过滤（见 4.1） |
+| HEX 视图 | 已实现 | 基于 Rust 侧无损 `hex`，行尾可见，不加 ASCII 侧栏 |
+| 时间戳显示 | 已实现 | 服务端切包时打 `ts`（毫秒），可开关，不影响保存的文件 |
+| 日志颜色自定义 | 已实现 | 弹窗内改时间戳 / 正文色 + 「统一正文颜色」，即时预览、存 localStorage |
+| 自动换行 | 已实现 | 仍走虚拟滚动，行高按等宽字符宽度反推 |
+| 右键菜单 | 已实现 | 复制选中 / 复制全部（跟随当前视图）/ 导出 .bin / 清空 |
+| 打开 / 关闭串口 | 已实现 | 复位默认开启；只脉冲 EN（esptool `hard_reset`），DTR 全程为高 |
+| 波特率（含 921600 / 1000000） | 已实现 | 11 档建议值，且可直接手输任意整数 |
+| 级别过滤 | 已实现 | Rust 侧过滤，chip 交互 |
+| 日志名过滤（逗号分隔） | 已实现 | 精确匹配，无日志名的行放行 |
+| 自动保存 | 已实现 | `logs/年-月/ESP32_Log_时间戳.txt`，格式跟随视图（HEX 时 `_hex`） |
+| 单次保存 | 已实现 | 系统保存对话框（plugin-dialog），内容同样跟随 HEX / 时间戳视图 |
+| 打开日志目录 | 已实现 | explorer / open / xdg-open |
+| 行数 / 总计 / 速率 | 已实现 | 1s 推送一次 |
+| 自动滚动（上滚自动关闭） | 已实现 | 与 Qt 版行为一致 |
+| 查找 + 高亮 + 结果面板跳转 | 已实现 | 显式触发，命中行下标基于当前缓冲 |
+| 清空 | 已实现 | 同时重置统计 |
+| 导入日志文件 | **未实现** | P2；需补文件读取 + 回放 |
+| 串口黑名单 | **未实现** | Rust 侧已预留 `blacklist` 状态，待接设置 UI |
+| 字体大小设置 | **未实现** | P2；当前固定 13px 等宽 |
+| 旧 `config.json` 迁移 | **未实现** | P2；当前偏好存 WebView localStorage |
+| 搜索高亮字号 +3 | **有意改动** | 变字号会破坏虚拟滚动定高，改为黄底/橙底标记 |
+
+## 6. 已知限制
+
+### 6.1 复位时序（按 esptool 源码实现）
+
+电平约定（esptool 源码注释原文）：`RTS = EN`（active low，True = 0V = 芯片处于复位），
+`DTR = GPIO0`（active low，True = 0V = 进下载模式）。
+
+Qt 版（`esp32_log_tab.py`）打开串口时做的是“两根线同时拉高 → 等 500ms → 同时归零”。
+它能把芯片带起来，但依赖“DTR 先释放、RTS 后释放”这个隐含顺序，任何一次写入丢包或
+重排序（Windows 的 `usbser.sys` 就不会单独下发 RTS 变化）都会变成“EN 释放时 GPIO0 仍为低”。
+那就是 `rst:0x17 (CHIP_USB_UART_RESET)` + `boot:0x5 (DOWNLOAD)` + `waiting for download`。
+
+本项目的行为：
+
+1. **复位默认开启**（与 Qt 版一致：复位一次才能拿到启动日志），可手动关。
+2. 时序只用 esptool 的 `hard_reset`：**只脉冲 EN，DTR 全程为 false**（GPIO0 保持高）。
+   每一次 RTS 写入后紧跟一次 DTR 写入，绕过 `usbser.sys` 不下发 RTS 的问题。
+3. 原生 USB 口（Espressif VID `0x303A`）复位后设备会重新枚举，旧句柄会失效，
+   所以复位后自动关掉重开（最多重试 8 × 250ms），而不是拿着死句柄一直读超时。
+
+### 6.2 选错串口也可能没数据
+
+P4 开发板通常同时枚举两个口：UART 桥（日志口）与芯片原生 USB（USB-Serial-JTAG）。
+页面里原生 USB 口会标注「芯片原生 USB，非 UART 桥」。日志不输出时优先换另一个 COM 口试。
+
+### 6.3 仍无数据时的排查顺序
+
+1. 确认「打开时复位设备」是勾上的（芯片停在 ROM 里不会主动输出）；
+2. 给板子断电重上电（脱离 download 模式）；
+3. 换一个 COM 口（UART 桥 ↔ 原生 USB）；
+4. 看页面 6 秒无数据横幅与状态栏字节数，确认到底是“没收到”还是“被过滤掉了”。
+
+### 6.4 普通串口「字节在涨、行数不动」
+
+状态栏「总计」在涨但「行数」一直是 0，说明字节收到了，只是切不出包。按顺序查：
+
+1. 数据源是不是还停在「ESP-IDF 日志」——那样只认 `\n`，只用 `\r` 结尾的设备永远切不出来；
+2. 切包策略换成「按空闲超时」——二进制协议通常没有任何分隔符；
+3. 定长帧就选「按固定字节数」，并把每包字节数填对。
+
+残行缓存的硬上限是 256KB，攒满会整块丢弃并计入 `dropped`，
+所以上述情况不会把内存吃掉，但日志会“凭空消失”。
+
+### 6.5 其他
+
+- **WebView2 不支持 Web Serial**，所以串口必须由 Rust 侧持有；纯浏览器模式下只能看模拟数据。
+- `npm run build:web` 与 `cargo check` 各自独立通过，但 `tauri build` 还需要安装
+  [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 与 MSVC 生成工具。
+- 无代码签名时 Windows 会弹 SmartScreen 提示，与现有 PyInstaller 产物一致。
+- 双程序同时运行会争用同一 COM 口，后打开的一方会收到"打开串口失败"。
+
+## 7. 下一步（按 ROI 排序）
+
+- **P2**：导入日志文件、串口黑名单、字体设置、旧 `config.json` 首次导入。
+- **P2**：定长切包的帧头 / 帧尾校验（当前只按字节数硬切，错位后不会自动重新同步）。
+- **P2**：常用切包方案（波特率 + 策略 + 关键字）存成可复用的「会话模板」。
+- **P3**：NSIS 安装包（当前 CI 只出 MSI）。
+- **P3**：若 ESP Log 达到"可以弃用 Qt 版"的稳定度，再把 TCP / UDP 迁过来；
+  届时外壳的侧栏已经预留好占位。
+
+## 8. CI 打包
+
+`v*` 标签会同时触发两个 workflow，产物互不重叠：
+
+| workflow | 打标签时的产物 | 用途 |
+|---|---|---|
+| `release.yml` | `TcpTool.zip` + `Multifun Serial_x.y.z_x64_*.msi` | 挂到 GitHub Release 页 |
+| `build-windows.yml` | `multifun-serial-msi` artifact | 在 Actions 页直接下载 / 验证 |
+
+MSI 由 `npm run tauri -- build --bundles msi` 产出，路径
+`src-tauri/target/release/bundle/msi/*.msi`；`.msi` 里已包含 WebView2 引导与快捷方式。
+日常 push / PR 不会编译 Rust，只有打标签或手动 `workflow_dispatch` 才跑。

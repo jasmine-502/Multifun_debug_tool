@@ -3,12 +3,15 @@ name: Build Windows EXE
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
+    # 打标签时发版统一交给 release.yml，这里跳过，避免同一份 PyInstaller 跑两遍
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: windows-latest
     
     steps:
@@ -43,4 +46,60 @@ jobs:
       with:
         name: TcpTool-Windows
         path: debug_tool/dist/TcpTool-Windows.zip
+        if-no-files-found: error
+
+  # Tauri 版（multifun_serial）的 MSI 安装包。
+  # 只在打标签（v*）或手动触发时编译，日常 push / PR 不跑，省掉一次 Rust 全量编译。
+  build-tauri-msi:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: npm
+        cache-dependency-path: multifun_serial/package-lock.json
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Rust
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: multifun_serial/src-tauri -> target
+
+    - name: Install frontend dependencies
+      working-directory: multifun_serial
+      run: npm ci
+
+    # MSI 的版本号取自 tauri.conf.json，不对齐 tag 的话每次发版都是 0.1.0
+    - name: Sync app version from tag
+      if: startsWith(github.ref, 'refs/tags/v')
+      working-directory: multifun_serial
+      shell: pwsh
+      run: |
+        $tag = $env:GITHUB_REF_NAME -replace '^v', ''
+        if ($tag -match '^\d+\.\d+\.\d+') {
+          $env:APP_VERSION = $Matches[0]
+          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version=process.env.APP_VERSION;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');"
+          Write-Host "app version -> $env:APP_VERSION"
+        } else {
+          Write-Host "tag '$tag' is not semver, keep the version in tauri.conf.json"
+        }
+
+    # beforeBuildCommand（npm run build:web）会顺带跑 tsc + vite build
+    - name: Build MSI
+      working-directory: multifun_serial
+      run: npm run tauri -- build --bundles msi
+
+    - name: Upload MSI
+      uses: actions/upload-artifact@v4
+      with:
+        name: multifun-serial-msi
+        path: multifun_serial/src-tauri/target/release/bundle/msi/*.msi
         if-no-files-found: error
