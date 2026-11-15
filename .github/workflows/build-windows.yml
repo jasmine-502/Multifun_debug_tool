@@ -10,47 +10,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    # 打标签时发版统一交给 release.yml，这里跳过，避免同一份 PyInstaller 跑两遍。
-    # 用 ref_type 而不是 startsWith('refs/tags/v')：后者区分大小写，V2.0.0 这类标签会漏判
-    if: ${{ github.ref_type != 'tag' }}
-    runs-on: windows-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v5
-    
-    - name: Set up Python
-      uses: actions/setup-python@v6
-      with:
-        python-version: '3.11'
-    
-    - name: Install dependencies
-      working-directory: debug_tool
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller
-        pip install -r packaging/requirements.txt
-    
-    # spec 默认 onefile，产物就是单个 dist/TcpTool.exe
-    - name: Build EXE
-      working-directory: debug_tool
-      run: |
-        python -m PyInstaller --noconfirm packaging/TcpTool.spec
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v5
-      with:
-        name: TcpTool-Windows
-        # 单文件 exe，不再压缩；Actions 下载 artifact 时平台会自行包一层 zip
-        path: debug_tool/dist/TcpTool.exe
-        if-no-files-found: error
-
-  # Tauri 版（multifun_serial）的 MSI 安装包。
-  # 只在打标签（v* / V*）或手动触发时编译，日常 push / PR 不跑，省掉一次 Rust 全量编译。
-  # 注意：推普通提交到 main 时这个 job 会被跳过，想要 MSI 就打标签或到 Actions 页手动 Run workflow。
+  # Tauri 版（multifun_serial）的 MSI 安装包，先跑：
+  # Rust 全量编译最容易出问题，先验证它，失败就不用再花时间打 Python 包了。
+  # 日常 push / PR 也编译（有 rust-cache，增量一两分钟）；
+  # 打标签时 MSI 交给 release.yml 统一构建，这里跳过，避免同一份产物编两遍。
   build-tauri-msi:
-    if: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.ref_type != 'tag' }}
     runs-on: windows-latest
 
     steps:
@@ -76,29 +41,54 @@ jobs:
       working-directory: multifun_serial
       run: npm ci
 
-    # MSI 的 ProductVersion 取自 tauri.conf.json，不打标签时就用文件里写死的版本
-    - name: Sync app version from tag
-      if: ${{ github.ref_type == 'tag' }}
-      working-directory: multifun_serial
-      shell: pwsh
-      run: |
-        $tag = $env:GITHUB_REF_NAME -replace '^v', ''
-        if ($tag -match '^\d+\.\d+\.\d+') {
-          $env:APP_VERSION = $Matches[0]
-          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version=process.env.APP_VERSION;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');"
-          Write-Host "app version -> $env:APP_VERSION"
-        } else {
-          Write-Host "tag '$tag' is not semver, keep the version in tauri.conf.json"
-        }
-
+    # 产物版本就是 tauri.conf.json 里写死的值（现在是 2.0.0）；
+    # 需要按 tag 改版本号的话走 release.yml，那边有 Sync app version from tag。
     # beforeBuildCommand（npm run build:web）会顺带跑 tsc + vite build
     - name: Build MSI
       working-directory: multifun_serial
       run: npm run tauri -- build --bundles msi
 
     - name: Upload MSI
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7
       with:
         name: multifun-serial-msi
         path: multifun_serial/src-tauri/target/release/bundle/msi/*.msi
+        if-no-files-found: error
+
+  # PySide6 版的单文件 exe，等 MSI 编译通过后再跑（needs 保证串行，MSI 失败就不打包）。
+  # 打标签时发版统一交给 release.yml，这里跳过，避免同一份 PyInstaller 跑两遍。
+  # 用 ref_type 而不是 startsWith('refs/tags/v')：后者区分大小写，V2.0.0 这类标签会漏判
+  build:
+    needs: build-tauri-msi
+    if: ${{ github.ref_type != 'tag' }}
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      working-directory: debug_tool
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install -r packaging/requirements.txt
+
+    # spec 默认 onefile，产物就是单个 dist/TcpTool.exe
+    - name: Build EXE
+      working-directory: debug_tool
+      run: |
+        python -m PyInstaller --noconfirm packaging/TcpTool.spec
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: TcpTool-Windows
+        # 单文件 exe，不再压缩；Actions 下载 artifact 时平台会自行包一层 zip
+        path: debug_tool/dist/TcpTool.exe
         if-no-files-found: error
