@@ -4,7 +4,8 @@ version = "2.0.0"
 description = "Multifun Serial 串口工具（Tauri + React；debug_tool 串口页的重写版）"
 authors = ["Multifun_debug_tool"]
 edition = "2021"
-rust-version = "1.77"
+# espflash 4.7 自己要求 1.95，跟着抬，否则 cargo 会提示依赖的 MSRV 更高
+rust-version = "1.95"
 
 [lib]
 name = "multifun_serial_lib"
@@ -21,6 +22,15 @@ serde_json = "1"
 serialport = "4"
 chrono = "0.4"
 parking_lot = "0.12"
+# espflash 用 log 输出握手/复位/切波特率的细节，转发到烧录页日志里
+log = "0.4"
+# 原生 ESP 烧录库；serialport feature 不是默认项，必须显式打开
+# （默认 default = ["cli", "update-check"]，会把 CLI 依赖一起拖进来）
+#
+# 4.x 不能退回 3.x：ESP32-P4 的 stub 在 4.x 里按芯片修订号分成了两份
+# （rev < 300 走 esp32p4rc1），3.3 只有一份通用 P4 stub，在这块板子上跳转后
+# 再也不回 OHAI，导致 stub-only 的擦除完全用不了。
+espflash = { version = "4.7", default-features = false, features = ["serialport"] }
 
 [profile.release]
 codegen-units = 1

@@ -4,11 +4,17 @@
  * 这样只改样式时不需要编译 Rust，也能完整验收交互。
  */
 
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { tauri, type Unlisten } from "./ipc";
 import type {
   AutosaveStatus,
+  ChipInfo,
   ConnStatus,
+  FlashEntryInput,
+  FlashLogLevel,
+  FlashLogLine,
+  FlashProgressPayload,
+  FlashReport,
   FwMergeEntryInput,
   FwMergeResult,
   FwScan,
@@ -75,6 +81,23 @@ export interface Backend {
   chooseDirectory(title: string): Promise<string | null>;
   /** 选单个 bin 文件，取消返回 null */
   chooseBinFile(): Promise<string | null>;
+
+  /* ---------- ESP32 烧录 ---------- */
+
+  /** 一次性连接设备写入选中的 bin；日志与进度通过事件推送 */
+  espFlash(
+    port: string,
+    baud: number,
+    chip: string,
+    entries: FlashEntryInput[],
+  ): Promise<FlashReport>;
+  /** 擦除整片 Flash；调用前必须已经征得用户同意 */
+  espErase(port: string, baud: number, chip: string): Promise<FlashReport>;
+  espDetect(port: string, baud: number, chip: string): Promise<ChipInfo>;
+  onFlashLog(cb: (line: FlashLogLine) => void): Promise<Unlisten>;
+  onFlashProgress(cb: (p: FlashProgressPayload) => void): Promise<Unlisten>;
+  /** 擦除前的二次确认（真机走系统对话框）*/
+  confirmErase(): Promise<boolean>;
 }
 
 /* ---------------- 真实实现 ---------------- */
@@ -136,6 +159,17 @@ const realBackend: Backend = {
     });
     return typeof picked === "string" ? picked : null;
   },
+  espFlash: (port, baud, chip, entries) => tauri.espFlash(port, baud, chip, entries),
+  espErase: (port, baud, chip) => tauri.espErase(port, baud, chip),
+  espDetect: (port, baud, chip) => tauri.espDetect(port, baud, chip),
+  onFlashLog: (cb) => tauri.onFlashLog(cb),
+  onFlashProgress: (cb) => tauri.onFlashProgress(cb),
+  async confirmErase() {
+    return confirm("确定要擦除Flash吗？此操作将清除所有数据！", {
+      title: "确认擦除",
+      kind: "warning",
+    });
+  },
 };
 
 /* ---------------- 浏览器模拟实现 ---------------- */
@@ -176,6 +210,9 @@ const mockHex = (text: string): string =>
   ).join(" ");
 
 const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+
+/** 模拟烧录/擦除的节奏：真机也是先握手、再逐步推进进度 */
+const mockDelay = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
 const pad = (n: number, w = 3) => String(n).padStart(w, "0");
 
@@ -233,6 +270,8 @@ const mockListeners = {
   status: new Set<(s: ConnStatus) => void>(),
   ports: new Set<(p: PortInfo[]) => void>(),
   autosave: new Set<(s: AutosaveStatus) => void>(),
+  flashLog: new Set<(line: FlashLogLine) => void>(),
+  flashProgress: new Set<(p: FlashProgressPayload) => void>(),
 };
 
 const MOCK_PORTS: PortInfo[] = [
@@ -423,7 +462,7 @@ const mockBackend: Backend = {
         { text: "找到: partition-table.bin (偏移: 0x8000)", level: "info" },
         { text: "找到: stamp_dev.bin (偏移: 0x10000)", level: "info" },
         {
-          text: "找到额外文件: extra.bin (未指定偏移地址，合并前请手动填写)",
+          text: "找到额外文件: extra.bin (未指定偏移地址，需手动填写偏移才会参与合并)",
           level: "warn",
         },
         { text: "扫描完成，共添加 4 个文件。", level: "ok" },
@@ -444,6 +483,80 @@ const mockBackend: Backend = {
   },
   async chooseBinFile() {
     return "模拟项目/build/extra2.bin";
+  },
+  async espFlash(port, baud, chip, entries) {
+    if (entries.length === 0) throw new Error("请至少选择一个烧录任务");
+    const emitLog = (text: string, level: FlashLogLevel = "info") =>
+      mockListeners.flashLog.forEach((cb) => cb({ text, level }));
+    const started = Date.now();
+    const totalBytes = entries.length * 512 * 1024;
+    // 与真机同口径：written/total 是整次任务的字节数，速度是开始写入后的平均值
+    const writeStarted = started + 220;
+    const emitPct = (percent: number) => {
+      const written = Math.round((totalBytes * percent) / 100);
+      const secs = Math.max((Date.now() - writeStarted) / 1000, 0.001);
+      mockListeners.flashProgress.forEach((cb) =>
+        cb({ percent, written, total: totalBytes, bytesPerSec: Math.round(written / secs) }),
+      );
+    };
+
+    emitLog(`正在连接 ${port}（${chip === "auto" ? "自动检测" : chip} @ ${baud}）…`);
+    await mockDelay(220);
+    emitLog(`准备烧录 ${entries.length} 个文件`, "info");
+    emitLog("已连接 ESP32-S3，开始写入…", "ok");
+    for (let percent = 0; percent <= 100; percent += 5) {
+      emitPct(percent);
+      await mockDelay(40);
+    }
+
+    const elapsedMs = Date.now() - started;
+    emitLog(`烧录完成：${entries.length} 个文件，用时 ${(elapsedMs / 1000).toFixed(1)}s`, "ok");
+    return { chip: "ESP32-S3", bytes: entries.length * 512 * 1024, files: entries.length, elapsedMs };
+  },
+  async espErase(port, baud, chip) {
+    const emitLog = (text: string, level: FlashLogLevel = "info") =>
+      mockListeners.flashLog.forEach((cb) => cb({ text, level }));
+    const started = Date.now();
+    // 擦除也走同一个进度事件，速度字段按 32MB 的容量算
+    const totalBytes = 32 * 1024 * 1024;
+    const emitPct = (percent: number) => {
+      const written = Math.round((totalBytes * percent) / 100);
+      const secs = Math.max((Date.now() - started) / 1000, 0.001);
+      mockListeners.flashProgress.forEach((cb) =>
+        cb({ percent, written, total: totalBytes, bytesPerSec: Math.round(written / secs) }),
+      );
+    };
+
+    emitLog(`正在连接 ${port}（${chip === "auto" ? "自动检测" : chip} @ ${baud}）…`);
+    await mockDelay(200);
+    emitLog("开始擦除整片 Flash（32 MB，分 32 块），期间请勿断电", "warn");
+    for (let percent = 0; percent <= 100; percent += 10) {
+      emitPct(percent);
+      await mockDelay(60);
+    }
+
+    const elapsedMs = Date.now() - started;
+    emitLog(`擦除完成，用时 ${(elapsedMs / 1000).toFixed(1)}s`, "ok");
+    return { chip: "ESP32-S3", bytes: 0, files: 0, elapsedMs };
+  },
+  async espDetect() {
+    await mockDelay(360);
+    return {
+      chip: "ESP32-S3（revision v0.2）",
+      crystal: "40 MHz",
+      usb: "USB-Serial/JTAG",
+      mac: "AC:67:B2:12:34:56",
+      flashSize: "8 MB",
+      flashMode: "—",
+      flashId: "—",
+      flashVoltage: "—",
+      features: "Wi-Fi, Bluetooth 5, Dual Core + LP Core, 240MHz",
+    };
+  },
+  onFlashLog: (cb) => subscribe(mockListeners.flashLog, cb),
+  onFlashProgress: (cb) => subscribe(mockListeners.flashProgress, cb),
+  async confirmErase() {
+    return window.confirm("确定要擦除Flash吗？此操作将清除所有数据！");
   },
 };
 

@@ -9,6 +9,7 @@ import {
   Waves,
   Zap,
 } from "lucide-react";
+import EspFlashPage from "./features/esp-flash/EspFlashPage";
 import EspLogPage from "./features/esp-log/EspLogPage";
 import FirmwareMergePage from "./features/firmware-merge/FirmwareMergePage";
 // 版本号只有 tauri.conf.json 一个真相源：MSI 的 ProductVersion 和侧栏显示都读它，
@@ -29,7 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "esp-log", label: "ESP32 日志", icon: Radio, ready: true },
   { id: "tcp", label: "TCP 客户端", icon: Network, ready: false },
   { id: "udp", label: "UDP 通信", icon: Waves, ready: false },
-  { id: "flash", label: "ESP32 烧录", icon: Zap, ready: false },
+  { id: "flash", label: "ESP32 烧录", icon: Zap, ready: true },
   { id: "merge", label: "固件合并", icon: Layers, ready: true },
 ];
 
@@ -125,7 +126,13 @@ export default function App() {
         <div className="view-host" style={{ display: view === "merge" ? undefined : "none" }}>
           <FirmwareMergePage active={view === "merge"} />
         </div>
-        {view !== "esp-log" && view !== "merge" && <Placeholder label={current.label} />}
+        {/* 烧录页也常驻：端口选择、勾选的任务行和操作日志跟手切回来 */}
+        <div className="view-host" style={{ display: view === "flash" ? undefined : "none" }}>
+          <EspFlashPage />
+        </div>
+        {view !== "esp-log" && view !== "merge" && view !== "flash" && (
+          <Placeholder label={current.label} />
+        )}
       </main>
     </div>
   );

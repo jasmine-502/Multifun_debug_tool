@@ -361,7 +361,7 @@ pub fn scan(root: &str) -> Result<ScanResult, String> {
                 let mut entry = make_entry(None, &extra, &build_dir);
                 entry.source = "extra".into();
                 logs.warn(format!(
-                    "找到额外文件: {} (未指定偏移地址，合并前请手动填写)",
+                    "找到额外文件: {} (未指定偏移地址，需手动填写偏移才会参与合并)",
                     file_name_of(&extra)
                 ));
                 seen.push(path_key(&extra));

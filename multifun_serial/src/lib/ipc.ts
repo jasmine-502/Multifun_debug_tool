@@ -7,7 +7,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AutosaveStatus,
+  ChipInfo,
   ConnStatus,
+  FlashEntryInput,
+  FlashLogLine,
+  FlashProgressPayload,
+  FlashReport,
   FwMergeEntryInput,
   FwMergeResult,
   FwScan,
@@ -22,6 +27,8 @@ export const EVT_STATS = "esp://stats";
 export const EVT_STATUS = "esp://status";
 export const EVT_PORTS = "esp://ports";
 export const EVT_AUTOSAVE = "esp://autosave";
+export const EVT_FLASH_LOG = "esp://flash/log";
+export const EVT_FLASH_PROGRESS = "esp://flash/progress";
 
 export type Unlisten = UnlistenFn;
 
@@ -90,4 +97,22 @@ export const tauri = {
     outputDir: string,
     filename: string,
   ) => invoke<FwMergeResult>("merge_firmware", { entries, root, outputDir, filename }),
+
+  /* ---------- ESP32 烧录 ---------- */
+
+  /** 一次性连接设备写入选中的 bin；过程日志与进度走事件 */
+  espFlash: (port: string, baud: number, chip: string, entries: FlashEntryInput[]) =>
+    invoke<FlashReport>("esp_flash", { port, baud, chip, entries }),
+
+  espErase: (port: string, baud: number, chip: string) =>
+    invoke<FlashReport>("esp_erase", { port, baud, chip }),
+
+  espDetect: (port: string, baud: number, chip: string) =>
+    invoke<ChipInfo>("esp_detect", { port, baud, chip }),
+
+  onFlashLog: (cb: (line: FlashLogLine) => void) =>
+    listen<FlashLogLine>(EVT_FLASH_LOG, (e) => cb(e.payload)),
+
+  onFlashProgress: (cb: (p: FlashProgressPayload) => void) =>
+    listen<FlashProgressPayload>(EVT_FLASH_PROGRESS, (e) => cb(e.payload)),
 };

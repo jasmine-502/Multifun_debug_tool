@@ -1382,6 +1382,13 @@ select:focus-visible {
 
 /* Bin 列表表格 */
 
+/* 「扫描于 …」只做提示，不抢右侧按钮的视觉权重 */
+.fw-scanned {
+  font-size: var(--font-size-xs);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
 .fw-table-wrap {
   max-height: 360px;
   border: 1px solid var(--line);
@@ -1559,6 +1566,256 @@ select:focus-visible {
   color: var(--term-ts);
 }
 
+/* ==== ESP32 烧录 ====================================================== */
+
+.fx-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fx-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.fx-row__label {
+  flex: 0 0 88px;
+  width: 88px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.fx-row__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.fx-inline-label {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* 波特率与芯片型号本身只有几个字符，下拉不必占满 200px */
+.fx-select--narrow {
+  min-width: 112px;
+  max-width: 150px;
+}
+
+/* 状态标签：灰=就绪、橙=进行中、绿=完成、红=失败 */
+.fx-status {
+  margin-left: auto;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+}
+
+.fx-status--idle {
+  color: var(--text-faint);
+}
+
+.fx-status--busy {
+  color: var(--accent);
+}
+
+.fx-status--ok {
+  color: var(--success);
+}
+
+.fx-status--error {
+  color: var(--danger);
+}
+
+/* 任务行 */
+
+.fx-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fx-task {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard);
+}
+
+/* 勾选的行提亮，一眼能看出这次会写哪几行 */
+.fx-task.is-on {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+.fx-task__no {
+  flex: 0 0 auto;
+  width: 18px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.fx-task__addr {
+  flex: 0 0 104px;
+  width: 104px;
+  min-width: 104px;
+  min-height: var(--control-height-sm);
+  font-size: var(--font-size-sm);
+}
+
+.fx-task__path {
+  min-height: var(--control-height-sm);
+  font-size: var(--font-size-sm);
+}
+
+/* 进度条：百分比固定在右侧，宽度不跳 */
+
+.fx-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.fx-progress__label {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.fx-progress__track {
+  flex: 1;
+  height: 8px;
+  min-width: 120px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.fx-progress__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--motion-fast) var(--ease-standard);
+}
+
+.fx-progress__value {
+  flex: 0 0 52px;
+  width: 52px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-soft);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 平均写入速度：等宽 + 定宽，刷新时不会把进度条挤得左右跳 */
+.fx-progress__speed {
+  flex: 0 0 74px;
+  width: 74px;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 芯片信息：两列网格，功能特性独占一整行 */
+
+.fx-chips {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-6);
+}
+
+.fx-chip-field {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.fx-chip-field--wide {
+  grid-column: 1 / -1;
+}
+
+.fx-chip-field__label {
+  flex: 0 0 auto;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.fx-chip-field__value {
+  font-size: var(--font-size-sm);
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+  /* 值可划选复制，和旧版 QLabel 的 TextSelectableByMouse 一致 */
+  user-select: text;
+}
+
+/* 操作日志：与固件合并页同一套终端配色 */
+
+.fx-log {
+  max-height: 260px;
+  padding: var(--space-3) var(--space-4);
+  overflow: auto;
+  background: var(--term-bg);
+  border: 1px solid var(--term-border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  scrollbar-color: #3b4454 transparent;
+}
+
+.fx-log__row {
+  display: flex;
+  gap: var(--space-2);
+  color: var(--term-fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fx-log__ts {
+  flex: 0 0 auto;
+  color: var(--term-ts);
+}
+
+.fx-log--warn .fx-log__text {
+  color: var(--lv-warning);
+}
+
+.fx-log--error .fx-log__text {
+  color: var(--lv-error);
+}
+
+.fx-log--ok .fx-log__text {
+  color: var(--lv-info);
+}
+
+.fx-log__empty {
+  margin: 0;
+  color: var(--term-ts);
+}
+
 /* ==== 响应式 ========================================================== */
 
 @media (max-width: 1180px) {
@@ -1624,6 +1881,40 @@ select:focus-visible {
 
   .fw-note {
     padding-left: 0;
+  }
+
+  /* 卡片头在窄屏本来就挤：允许按钮区换行，扫描时间折到按钮上方 */
+  .card__actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .fw-scanned {
+    order: -1;
+  }
+
+  /* 烧录页同样折行：标签脱离固定宽度，任务行允许换行 */
+  .fx-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+
+  .fx-row__label {
+    flex: none;
+    width: auto;
+  }
+
+  .fx-status {
+    margin-left: 0;
+  }
+
+  .fx-task {
+    flex-wrap: wrap;
+  }
+
+  .fx-chips {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

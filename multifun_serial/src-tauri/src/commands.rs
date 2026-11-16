@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
 
+use crate::esp_flash;
 use crate::firmware_merge;
 use crate::ports::{self, PortInfo};
 use crate::serial_reader::{self, AutosaveStatus, OpenRequest, SplitMode};
@@ -259,4 +260,64 @@ pub fn merge_firmware(
     filename: String,
 ) -> Result<firmware_merge::MergeResult, String> {
     firmware_merge::merge(&entries, &root, &output_dir, &filename)
+}
+
+/* ---------------- ESP32 烧录 ---------------- */
+
+/// 烧录页不常驻串口，但日志页可能会占着同一个端口：
+/// 提前给一句中文提示，比让 espflash 报 "access denied" 好懂
+fn ensure_serial_free(state: &AppState) -> Result<(), String> {
+    if state.session.lock().is_some() {
+        return Err("ESP32 日志页正在占用串口，请先关闭日志再烧录".to_string());
+    }
+    Ok(())
+}
+
+/// 烧录会阻塞几秒到几十秒，必须放到阻塞线程池：
+/// 同步命令跑在主线程上会把整个界面卡住，进度事件也刷不出来
+async fn run_blocking<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|err| format!("后台任务异常退出: {err}"))?
+}
+
+#[tauri::command]
+pub async fn esp_flash(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    port: String,
+    baud: u32,
+    chip: String,
+    entries: Vec<esp_flash::FlashEntry>,
+) -> Result<esp_flash::FlashReport, String> {
+    ensure_serial_free(&state)?;
+    run_blocking(move || esp_flash::flash(&app, &port, baud, &chip, &entries)).await
+}
+
+#[tauri::command]
+pub async fn esp_erase(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    port: String,
+    baud: u32,
+    chip: String,
+) -> Result<esp_flash::FlashReport, String> {
+    ensure_serial_free(&state)?;
+    run_blocking(move || esp_flash::erase(&app, &port, baud, &chip)).await
+}
+
+#[tauri::command]
+pub async fn esp_detect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    port: String,
+    baud: u32,
+    chip: String,
+) -> Result<esp_flash::ChipInfo, String> {
+    ensure_serial_free(&state)?;
+    run_blocking(move || esp_flash::detect(&app, &port, baud, &chip)).await
 }

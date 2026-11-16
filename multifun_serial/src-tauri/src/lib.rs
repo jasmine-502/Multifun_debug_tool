@@ -1,4 +1,5 @@
 mod commands;
+mod esp_flash;
 mod firmware_merge;
 mod log_parser;
 mod ports;
@@ -26,8 +27,21 @@ pub fn run() {
             commands::default_log_dir,
             commands::scan_firmware,
             commands::merge_firmware,
+            commands::esp_flash,
+            commands::esp_erase,
+            commands::esp_detect,
         ])
         .setup(|app| {
+            // 窗口标题补上版本号：截图反馈时不用再问「你跑的哪一版」。
+            // 版本号取 package_info()，它由 tauri.conf.json 的 version 生成，
+            // 和 MSI 的 ProductVersion、侧栏显示是同一个真相源
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(title) = window.title() {
+                    let _ = window.set_title(&format!("{title} v{}", app.package_info().version));
+                }
+            }
+            // espflash 的握手/复位细节走 log，接到烧录页日志里
+            esp_flash::install_logger(app.handle().clone());
             let state = app.state::<state::AppState>();
             ports::spawn_monitor(app.handle().clone(), Arc::clone(&state.blacklist));
             Ok(())

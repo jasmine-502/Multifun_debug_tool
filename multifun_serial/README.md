@@ -1,7 +1,7 @@
 # Multifun Serial（multifun_serial）
 
 Multifun Serial 是串口日志 / 调试工具，也是 `debug_tool` 里 ESP Log tab 的 Tauri 重写版
-（现已支持通用串口），并把 Qt 版的「固件合并」一并迁了过来。**旧 PySide6 代码一行未动**，
+（现已支持通用串口），并把 Qt 版的「固件合并」与「ESP32 烧录」一并迁了过来。**旧 PySide6 代码一行未动**，
 两个程序可以并存，只是不能同时打开同一个串口。
 
 ## 1. 为什么单独一个目录
@@ -10,7 +10,7 @@ Multifun Serial 是串口日志 / 调试工具，也是 `debug_tool` 里 ESP Log
 |---|---|---|
 | PySide6 桌面版（全部 5 个 tab） | `debug_tool/` | 唯一稳定实现，继续维护 |
 | Android 日志端 | `esp_log_app/` | 独立 |
-| **Multifun Serial**（Tauri） | `multifun_serial/`（本目录） | ESP Log + 固件合并已迁移，其余 tab 占位 |
+| **Multifun Serial**（Tauri） | `multifun_serial/`（本目录） | ESP Log + 固件合并 + ESP32 烧录已迁移，TCP / UDP 占位 |
 
 目录名 `multifun_serial/`、Cargo crate `multifun-serial`、npm 包 `multifun-serial` 已统一到产品名。
 只留两处标识符按历史保留：bundle identifier `com.multifun.esplog` 与偏好键 `esp-log-console.*`——
@@ -171,6 +171,112 @@ src-tauri/src/firmware_merge.rs    扫描 / 解析 / 拼片，全部纯函数，
 `merged_firmware[-项目名][-V版本][-YYYYMMDD_HHMMSS].bin`，预览用 `X.Y.Z` 占位、真正合并时才取实时时间；
 配置存 localStorage `multifun-serial.firmware.prefs.v1`，下次进来目录还在就自动扫一遍。
 
+### 4.5 ESP32 烧录为什么不用 esptool
+
+```
+src-tauri/src/esp_flash.rs    烧录 / 擦除 / 检测，同步阻塞代码
+  ├─ flash：读文件 → 开串口（115200 握手）→ Connection::new + begin() → Flasher::connect → write_bins_to_flash → 内部自动 hard reset
+  ├─ erase：只走 stub 连接 → 分 1MB 块 erase_region() → reset_after(stub, chip)（espflash 擦完不复位）
+  └─ detect：device_info() + connection().usb_pid() 推断走的是芯片 USB 还是 UART 桥
+```
+旧版是拼 `esptool` 命令行、再解析 stdout 里的百分比和字段，用 `QProcess` 拉起 Python。
+这里改用 Rust crate [`espflash`](https://crates.io/crates/espflash)（`default-features = false, features = ["serialport"]`）：
+
+- 不依赖用户机器上的 Python / esptool 版本，也不会因为 esptool 5.x 把参数改成连字符就失配；
+- 进度是结构化回调，段与段之间按字节数加权，先写 20 KB 的 bootloader 不会瞬间冲到 50%；
+  进度事件同时带 `written` / `total` / `bytesPerSec`（整次任务累计，50ms 节流一次），
+  界面上的「平均速度」就是 `bytesPerSec`，完成日志写成
+  `用时 9.3s（写入 8.2s，平均 119.4 KB/s）`：写入耗时与速度不含读文件与握手，
+  否则小固件会被握手时间拖成个位数 KB/s；擦除也复用同一个事件，所以进度条和速度不会停在 0；
+- 三个命令都丢进 `spawn_blocking`，不会卡住主线程；串口是一次性的（进来开、结束关），不会「烧录页握着串口关不掉」。
+
+页面上：4 行固定任务（第一行默认勾选）、地址**一律按十六进制**解释（`0x10000` 与 `10000` 等价，与合并页的十进制规则不同）、
+勾选与地址 / 路径持久化在 localStorage `multifun-serial.flash.prefs.v1`（只有确实选过 bin 的行沿用旧地址，空行回落 `0x0`）。
+三个动作在 Rust 侧用 `AtomicBool` + RAII 互斥；日志页占着串口时点烧录会被直接拦下。
+
+取不到的字段：`flashMode` / `flashId` / `flashVoltage` 是 eFuse 项，espflash 不读，界面显示「—」；
+USB 模式用 `connection().usb_pid()` 推断（`0x1001` 为 USB-Serial/JTAG，否则按 UART 桥接）。
+
+#### 连不上时做了什么兜底
+
+espflash 的 `Error::Connection` 的 `Display` 恒为一句 `Error while connecting to device`，
+真正原因（复位没生效、boot 模式不对、同步无回应、切速失败）藏在 `source()` 链里。所以：
+
+- `describe()` 沿 `source()` 把整条错误链拼成 `A → B → C`，界面上直接看到根因；
+- 握手固定 115200，复位方式按串口类型排序（PID `0x1001` 先试 USB-JTAG 复位，否则先试默认复位），
+  每次重开串口，全失败才报错并把每条的原因列出来。PID `0x1001` 下 `DefaultReset` 与 `UsbReset`
+  会落到同一套 `UsbJtagSerialReset`，所以那种口只试两种，省掉白等的一轮；
+- **stub 没跑起来时自动退回 ROM 模式**：espflash 的 stub 在 USB-Serial-JTAG 上偶发丢 `OHAI`
+  握手帧（`Stub written!` 后再无字节，见 esp-rs/espflash#1113），ROM 模式不传 stub，正好绕过；
+  只有确实进过下载模式才会走这一轮，避免无谓等待；
+- 两处剪枝让「连不上」不再白等十几秒：复位 / 同步就没过时，换 stub 还是 ROM 结果一样，直接结束；
+  stub 已经写进 RAM 才失联时，换复位方式也一样，剩下的复位方式全跳过。
+  阶段怎么判断：espflash 4 把连接拆成了两步，代码先自己 `Connection::begin()`（只做复位 + 同步），
+  成功后才交给 `Flasher::connect`（检测芯片、读修订号、装 stub）——`begin()` 报错算同步阶段，
+  之后的报错算 stub 阶段。4.x 的 `ConnectionError` 已经收回 crate 内部，不能再 match 错误类型，
+  所以只能这样按「卡在哪一步」区分；代价是 `Flasher::connect` 内部会再 `begin()` 一次（约 0.4 秒）；
+- **记住每个串口上次成功的模式**（`GOOD_MODE`，进程内、按 `端口@VID:PID` 索引），下次先试它：
+  像 stub 起不来的板子，第一遍约 5 秒，第二遍直接走 ROM，一两秒就通；
+- 高速档（默认 460800）在握手成功之后单独切，**切速失败只降速、不判死**：drop 后先按 115200 重连，
+  不行再按请求的速率重连（芯片可能已经切过去了），拿到能用的链接就继续烧；
+- 日志里打印串口的 VID/PID（`0x1001` 标注 USB-Serial-JTAG），并用 `log` 桥把 espflash 自己的
+  `debug!`（复位策略、boot 模式、切换波特率）转发到页面，前缀 `espflash:`。
+
+#### 擦除整片 Flash：必须是 stub 模式
+
+`EraseFlash`(0xD0) / `EraseRegion`(0xD1) 在 espflash 的 `command.rs` 里被归为 **Stub-only commands**，
+ROM 加载器根本没有擦除能力。真机日志完整演示了这件事：
+
+```
+11:29:39 已连接（USB-JTAG 复位，ROM 模式）      ← stub 在 `Stub written!` 后失联，只能走 ROM
+11:29:39 Writing command: EraseRegion { .. }     ← ROM 不认，30 秒无回应
+11:30:10 超时
+11:30:10 Writing command: EraseFlash             ← 同样不认，再等几分钟
+```
+
+所以：
+
+- 擦除只走 `connect_stub()`（`handshake(..., allow_rom = false)`）：不退回 ROM，
+  而是把两种复位方式各试一遍、stub 失联后再整轮重试一次（#1113 那种偶发丢帧重跑常能过）；
+- 连不上 stub 就直接报错，并说明「ROM 没有擦除命令、直接烧录会按扇区自动擦」；
+  **不再发注定不回答的命令**，也不会再把超时放宽到几十分钟；
+- 擦得动时也不走 `erase_flash()`：它只发一条 `EraseFlash`，超时在 crate 里写死 120 秒
+  （`ERASE_CHIP_TIMEOUT`），而 32MB NOR 芯片级擦除典型就 100 秒上下，正好卡边界
+  （旧日志 `11:09:51 → 11:11:51` 整 120 秒）。改成按容量 **分 1MB 块走 `EraseRegion`**：
+  每块 30 秒预算（`30 秒/MB`）且有独立进度，失败就当场报错，不再补发第二条命令。
+
+#### 为什么最后把 espflash 从 3.3 升到 4.7
+
+只改「必须走 stub」还不够：这块 ESP32-P4（USB-Serial-JTAG，PID `0x1001`）在 espflash 3.3 下
+stub 永远起不来——`Stub written!` 之后 3 秒一声不响（`Timeout while running command`），
+所以擦除功能实际上仍不可用。而同一块板用 esptool 十几秒能擦完 32MB，说明芯片能跑 stub，
+问题在 stub 本身。
+
+真机日志（修复后只需 7 秒就能报出准确原因，不再卡几分钟）：
+
+```
+12:13:07 Stub written!                            ← espflash 3.3 的通用 P4 stub
+12:13:10 Timeout while running command            ← 跳过去之后再无字节
+12:13:11 再重试一轮 → 同样 Stub written! → 12:13:14 超时
+```
+
+根因在 espflash 的 stub 资源：4.x 把 P4 的 stub 按芯片修订号拆成了两份
+（`resources/stubs/esp32p4.toml` 与 `esp32p4rc1.toml`，`rev = major * 100 + minor`，
+`< 300` 走 RC1，与 esptool 的选择一致），3.3 只有一份通用 P4 stub。升级后，
+连接时会先读芯片修订号、再选对应 stub。迁移代价：`Flasher::connect` 改成先建 `Connection`、
+`Segment` 取代 `RomSegment`、`ProgressCallbacks::finish(skipped)` 多了参数、
+`ConnectionError` 不再对外公开（所以改用「卡在哪一步」判断阶段）。
+
+提醒：整片擦除不是烧录的前置步骤，直接烧录会按扇区自动擦除用到的范围。
+
+排障顺序：先看日志里 `espflash:` 开头的行定位卡在哪一步，再试按住 BOOT 后点烧录，最后把波特率手改成 115200。
+
+依赖上有一个必须记住的锁：espflash 的 `serialport` feature 要 `toml ^0.8.19`，而 Linux-only 的
+`glib-macros 0.18.5` 会把 `proc-macro-crate` 升到 2.x，后者把 `toml_datetime` 钉死为 `0.6.3`，整张依赖图就解不出来。
+现状是 `glib-macros 0.18.2` + `toml 0.8.23`（0.8.19 与 serde 1.0.229 编译不兼容）。
+**升级 tauri 或跑 `cargo update` 后若又报 `toml_datetime` 冲突，先把这两个版本按上面的组合压回去。**
+另外 espflash 4.7 自己声明 `rust-version = 1.95`，`src-tauri/Cargo.toml` 的 `rust-version` 跟着抬到 1.95。
+
 ## 5. 与 Qt 版的对齐矩阵
 
 | 功能 | 状态 | 说明 |
@@ -206,7 +312,10 @@ src-tauri/src/firmware_merge.rs    扫描 / 解析 / 拼片，全部纯函数，
 | 固件合并：拖放目录 | 已实现 | Tauri 全局拖放事件，按页面 `active` 门控 |
 | 固件合并：执行日志 | 已实现 | 四色（info / warn / error / ok），最多留 500 行 |
 | 固件合并：配置持久化 | 已实现 | localStorage，替代旧版 `config.json` |
-| ESP32 烧录（esptool） | **未实现** | 合并产物可直接交给 `esptool.py write_flash 0x0 merged.bin` |
+| ESP32 烧录：烧录 / 擦除 / 检测 | 已实现 | espflash 直连串口，替代拼 esptool 命令行（见 4.5） |
+| ESP32 烧录：进度与日志 | 已实现 | 结构化事件；按字节加权 + 50ms 节流；日志最多 500 行 |
+| ESP32 烧录：芯片信息 | 部分实现 | Flash 模式 / 器件 ID / 电压是 eFuse 项，espflash 不读，显示「—」 |
+| ESP32 烧录：ESP32-C61 | **有意改动** | espflash 只认 esp32/c2/c3/c6/h2/p4/s2/s3，下拉里去掉 C61 |
 
 ## 6. 已知限制
 
@@ -261,7 +370,7 @@ P4 开发板通常同时枚举两个口：UART 桥（日志口）与芯片原生
 
 ## 7. 下一步（按 ROI 排序）
 
-- **P2**：把合并产物接上 esptool 烧录（对齐 `esp32_flash_tab.py`），合并 + 烧录合成一条路径。
+- **P2**：合并页产出后直接送到烧录页（当前需要手动选 bin）。
 - **P2**：导入日志文件、串口黑名单、字体设置、旧 `config.json` 首次导入。
 - **P2**：定长切包的帧头 / 帧尾校验（当前只按字节数硬切，错位后不会自动重新同步）。
 - **P2**：常用切包方案（波特率 + 策略 + 关键字）存成可复用的「会话模板」。
@@ -289,5 +398,7 @@ MSI 由 `npm run tauri -- build --bundles msi` 产出，路径
 
 版本号只有一个真相源：`src-tauri/tauri.conf.json` 的 `version`。MSI 的 ProductVersion 用它，
 侧栏显示的 `v2.0.0` 也是直接 `import` 这个文件（所以 CI 里打标签改写它之后，两边自动同步）；
+窗口标题同样带版本号：Rust 侧 `setup` 里用 `package_info().version` 拼到配置的标题后面
+（`Multifun Serial 串口工具 v2.0.0`），浏览器预览时由 `main.tsx` 改 `document.title`，读的也是这个文件；
 `package.json` 与 `Cargo.toml` 的版本号只是跟着对齐，不参与产物命名。
 标签大小写现在都能用（`v*` 和 `V*`），手动触发时不会改写版本，MSI 就沿用文件里写死的值。

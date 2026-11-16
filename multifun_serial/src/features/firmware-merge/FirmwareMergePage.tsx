@@ -60,6 +60,11 @@ const stampName = (date = new Date()): string =>
 const clockStamp = (date = new Date()): string =>
   `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
 
+/** `YYYY-MM-DD HH:MM:SS`，给「扫描于」用：只显示时分秒分不清是哪天的快照 */
+const fullStamp = (date = new Date()): string =>
+  `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ` +
+  `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+
 const basename = (path: string): string => path.split(/[\\/]/).pop() ?? path;
 
 const formatBytes = (bytes: number): string => {
@@ -111,6 +116,8 @@ export default function FirmwareMergePage({ active }: FirmwareMergePageProps) {
   const [addProject, setAddProject] = useState(prefs.addProject ?? false);
 
   const [buildDir, setBuildDir] = useState("");
+  /** 上一次扫描完成的时刻；扫描失败时保留旧值，因为表里的还是旧快照 */
+  const [scannedAt, setScannedAt] = useState<string | null>(null);
   const [chip, setChip] = useState("未知");
   const [flashSize, setFlashSize] = useState("未知");
   const [flashFreq, setFlashFreq] = useState("未知");
@@ -181,6 +188,7 @@ export default function FirmwareMergePage({ active }: FirmwareMergePageProps) {
         setLogs([]);
         logSeq.current = 0;
         result.logs.forEach((line) => appendLog(line.text, line.level));
+        setScannedAt(fullStamp());
       } catch (error) {
         appendLog(`扫描失败: ${errorText(error)}`, "error");
         appendLog("请确认选中的是 ESP-IDF 项目根目录，且已经编译生成 build 目录", "warn");
@@ -224,6 +232,8 @@ export default function FirmwareMergePage({ active }: FirmwareMergePageProps) {
 
   const handleClearRows = () => {
     setRows([]);
+    // 表清空了，扫描快照也随之作废，留着时间会误导
+    setScannedAt(null);
     appendLog("已清空 Bin 列表");
   };
 
@@ -231,13 +241,14 @@ export default function FirmwareMergePage({ active }: FirmwareMergePageProps) {
 
   const handleMerge = async () => {
     const usable: FwMergeEntryInput[] = [];
-    let skipped = 0;
+    const skipped: string[] = [];
     for (const row of rows) {
       const path = row.path.trim();
       const offset = row.offset.trim();
       // 与旧版一致：偏移或文件留空的行直接跳过，不算错误；偏移是否合法交给 Rust 判
       if (path === "" || offset === "") {
-        skipped += 1;
+        const label = row.name || (path === "" ? "空行" : basename(path));
+        skipped.push(`${label}（${path === "" ? "未选文件" : "缺偏移"}）`);
         continue;
       }
       usable.push({ offset, path });
@@ -247,8 +258,12 @@ export default function FirmwareMergePage({ active }: FirmwareMergePageProps) {
       appendLog("没有有效的合并项：偏移地址和文件都不能为空", "error");
       return;
     }
-    if (skipped > 0) {
-      appendLog(`已跳过 ${skipped} 行未填写完整的条目`, "warn");
+    if (skipped.length > 0) {
+      // 点名是哪几行：只写「跳过 1 行」会让人以为额外文件也进去了
+      appendLog(
+        `已跳过 ${skipped.length} 个未填完整的条目：${skipped.join("、")}`,
+        "warn",
+      );
     }
 
     const filename = makeFilename(
@@ -274,7 +289,8 @@ export default function FirmwareMergePage({ active }: FirmwareMergePageProps) {
       appendLog(`合并成功！文件已保存到: ${result.output}`, "ok");
       appendLog(
         `文件大小: ${result.size.toLocaleString()} bytes (${(result.size / 1024 / 1024).toFixed(2)} MB)，` +
-          `共 ${result.count} 个条目`,
+          `共合并 ${result.count} 个条目` +
+          (skipped.length > 0 ? `（另有 ${skipped.length} 个缺偏移的未参与）` : ""),
         "ok",
       );
       result.overlaps.forEach((text) => appendLog(text, "warn"));
@@ -443,6 +459,11 @@ export default function FirmwareMergePage({ active }: FirmwareMergePageProps) {
         subtitle="按偏移地址升序合并，后写的覆盖先写的；偏移或文件留空的行会被跳过"
         actions={
           <>
+            {scannedAt && (
+              <span className="fw-scanned mono" title="表格是这次扫描得到的快照">
+                扫描于 {scannedAt}
+              </span>
+            )}
             <Button variant="ghost" size="small" onClick={handleAddRow}>
               <Plus size={14} />
               添加行
