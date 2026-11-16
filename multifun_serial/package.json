@@ -1,10 +1,14 @@
 {
   "name": "multifun-serial",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "Multifun Serial 串口工具（Tauri + React）：ESP 日志解析 + 通用串口 HEX / 文本查看",
   "type": "module",
   "scripts": {
+    "sync:version": "node scripts/sync-version.mjs",
+    "predev": "node scripts/sync-version.mjs",
+    "prebuild": "node scripts/sync-version.mjs",
+    "pretauri": "node scripts/sync-version.mjs",
     "dev": "tauri dev",
     "dev:web": "vite",
     "build": "tauri build",

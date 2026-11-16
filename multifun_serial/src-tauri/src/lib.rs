@@ -33,12 +33,18 @@ pub fn run() {
         ])
         .setup(|app| {
             // 窗口标题补上版本号：截图反馈时不用再问「你跑的哪一版」。
-            // 版本号取 package_info()，它由 tauri.conf.json 的 version 生成，
-            // 和 MSI 的 ProductVersion、侧栏显示是同一个真相源
+            // 基础标题仍取 tauri.conf.json 里配置的那个，版本号取 package_info()
+            //（同样由它生成），和 MSI 的 ProductVersion、侧栏显示是同一个真相源
+            let base = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|win| win.label == "main")
+                .map(|win| win.title.clone())
+                .unwrap_or_else(|| app.package_info().name.clone());
             if let Some(window) = app.get_webview_window("main") {
-                if let Ok(title) = window.title() {
-                    let _ = window.set_title(&format!("{title} v{}", app.package_info().version));
-                }
+                let _ = window.set_title(&format!("{base} v{}", app.package_info().version));
             }
             // espflash 的握手/复位细节走 log，接到烧录页日志里
             esp_flash::install_logger(app.handle().clone());

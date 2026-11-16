@@ -396,9 +396,11 @@ MSI 由 `npm run tauri -- build --bundles msi` 产出，路径
 `build-windows.yml` 的两个 job 是串行的：先编 MSI（Rust 编译最容易出问题，先暴露），
 成功后才打 `TcpTool.exe`；MSI 失败则 Python 包不再构建。
 
-版本号只有一个真相源：`src-tauri/tauri.conf.json` 的 `version`。MSI 的 ProductVersion 用它，
-侧栏显示的 `v2.0.0` 也是直接 `import` 这个文件（所以 CI 里打标签改写它之后，两边自动同步）；
-窗口标题同样带版本号：Rust 侧 `setup` 里用 `package_info().version` 拼到配置的标题后面
-（`Multifun Serial 串口工具 v2.0.0`），浏览器预览时由 `main.tsx` 改 `document.title`，读的也是这个文件；
-`package.json` 与 `Cargo.toml` 的版本号只是跟着对齐，不参与产物命名。
+版本号只有一个真相源：`package.json` 的 `version`（改版本只改这一处，然后 `npm run sync:version`
+或任意一次 `npm run dev` / `npm run tauri -- build`，`scripts/sync-version.mjs` 会把数字写进
+`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml`，同步动作挂在 npm 的 `predev` / `prebuild` / `pretauri` 钩子上）。
+MSI 的 ProductVersion 与安装包名、侧栏显示的 `v2.0.2`、窗口标题背后的 `PackageInfo` 都来自同步后的
+`tauri.conf.json`；侧栏是直接 `import` 这个文件，浏览器预览时由 `main.tsx` 改 `document.title`。
+窗口标题显示为 `Multifun Serial 串口工具 v2.0.2`（Rust 侧 `setup` 用 `package_info().version` 拼在配置标题后面）。
+以前 `package.json` / `tauri.conf.json` / `Cargo.toml` 各写一份，结果 2.0.2 发版时窗口还显示 v2.0.0，所以改成单一来源。
 标签大小写现在都能用（`v*` 和 `V*`），手动触发时不会改写版本，MSI 就沿用文件里写死的值。

@@ -41,7 +41,7 @@ jobs:
       working-directory: multifun_serial
       run: npm ci
 
-    # 产物版本就是 tauri.conf.json 里写死的值（现在是 2.0.0）；
+    # 产物版本取自 package.json 的 version（pretaurai 钩子会先把它同步进 tauri.conf.json）；
     # 需要按 tag 改版本号的话走 release.yml，那边有 Sync app version from tag。
     # beforeBuildCommand（npm run build:web）会顺带跑 tsc + vite build
     - name: Build MSI

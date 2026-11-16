@@ -69,7 +69,8 @@ jobs:
       working-directory: multifun_serial
       run: npm ci
 
-    # MSI 的 ProductVersion 取自 tauri.conf.json，不打标签时就用文件里写死的版本
+    # 版本号真相源是 package.json：打标签时按标签改写它，tauri.conf.json 与 Cargo.toml
+    # 由 pretaurai 钩子（scripts/sync-version.mjs）跟着同步，非 semver 标签则沿用文件里的值
     - name: Sync app version from tag
       if: ${{ github.ref_type == 'tag' }}
       working-directory: multifun_serial
@@ -78,10 +79,10 @@ jobs:
         $tag = $env:GITHUB_REF_NAME -replace '^v', ''
         if ($tag -match '^\d+\.\d+\.\d+') {
           $env:APP_VERSION = $Matches[0]
-          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version=process.env.APP_VERSION;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');"
+          node -e "const fs=require('fs');const p='package.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version=process.env.APP_VERSION;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');"
           Write-Host "app version -> $env:APP_VERSION"
         } else {
-          Write-Host "tag '$tag' is not semver, keep the version in tauri.conf.json"
+          Write-Host "tag '$tag' is not semver, keep the version in package.json"
         }
 
     # beforeBuildCommand（npm run build:web）会顺带跑 tsc + vite build
