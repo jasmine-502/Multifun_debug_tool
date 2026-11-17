@@ -1,3 +1,4 @@
+mod codec;
 mod commands;
 mod esp_flash;
 mod firmware_merge;
@@ -5,6 +6,8 @@ mod log_parser;
 mod ports;
 mod serial_reader;
 mod state;
+mod tcp_client;
+mod udp_socket;
 
 use std::sync::Arc;
 
@@ -30,6 +33,13 @@ pub fn run() {
             commands::esp_flash,
             commands::esp_erase,
             commands::esp_detect,
+            commands::tcp_connect,
+            commands::tcp_listen,
+            commands::tcp_disconnect,
+            commands::tcp_send,
+            commands::udp_start,
+            commands::udp_stop,
+            commands::udp_send,
         ])
         .setup(|app| {
             // 窗口标题补上版本号：截图反馈时不用再问「你跑的哪一版」。
@@ -57,6 +67,8 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let state = window.state::<state::AppState>();
                 commands::stop_session(&state);
+                commands::stop_tcp(&state);
+                commands::stop_udp(&state);
             }
         })
         .run(tauri::generate_context!())

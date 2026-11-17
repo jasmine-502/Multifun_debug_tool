@@ -205,3 +205,108 @@ export interface FlashProgressPayload {
   /** 从开始写入到现在的平均速度，字节/秒 */
   bytesPerSec: number;
 }
+
+/* ---------- TCP / UDP 通信（同一个页面） ---------- */
+
+/** 协议：同一个页面里用下拉切换 TCP 与 UDP（Qt 版是两个独立 tab） */
+export type CommProtocol = "tcp" | "udp";
+
+/** 工作模式：客户端连出去，服务端听进来（与 Qt 版的「工作模式」单选一致） */
+export type CommMode = "client" | "server";
+
+/** 每行发送配置的格式：与 Qt 版「ASCII / HEX」下拉一致 */
+export type CommFormat = "ascii" | "hex";
+
+/** 运行状态：starting 只在前端存在，后端只报 open / closed / error */
+export type CommLinkState = "idle" | "starting" | "open" | "error";
+
+/** 与 Qt 版一致：固定 5 行发送指令（TCP 与 UDP 共用同一份配置） */
+export const COMM_SEND_ROWS = 5;
+
+/** 接收区最多保留的行数，超出从头丢 */
+export const COMM_MAX_ROWS = 2000;
+
+/** 可编辑地址/端口的下拉历史上限，与 Qt 版 `_add_history` 一致 */
+export const COMM_HISTORY_LIMIT = 20;
+
+/** 一次 read 收到的数据；hex 与 text 都由 Rust 给出，hex 才是无损的 */
+export interface TcpChunk {
+  /** 收到时刻（Unix 毫秒） */
+  ts: number;
+  /** 本次收到的字节数 */
+  len: number;
+  /** 大写十六进制，空格分隔 */
+  hex: string;
+  /** UTF-8 lossy 文本 */
+  text: string;
+  /** 服务端模式的来源 `地址:端口`；客户端模式只有一条连接，恒为 null */
+  from: string | null;
+}
+
+export interface TcpStatus {
+  state: "open" | "closed" | "error";
+  /** 客户端是服务器地址，服务端是实际监听地址 */
+  remote: string | null;
+  message: string | null;
+}
+
+/** 发送回执：界面按行内格式回显，不再本地解析一遍 */
+export interface TcpSent {
+  len: number;
+  hex: string;
+  text: string;
+  /** 写成几个连接：客户端恒为 1，服务端是广播成功数 */
+  targets: number;
+}
+
+/** 服务端在线客户端变化：连接、断开、被拒绝各报一条 */
+export interface TcpPeerEvent {
+  kind: "connected" | "disconnected" | "rejected";
+  /** 对端 `地址:端口` */
+  peer: string;
+  /** 变化之后的在线数量 */
+  count: number;
+}
+
+export const TCP_DEFAULT_HOST = "127.0.0.1";
+export const TCP_DEFAULT_PORT = "8000";
+
+/** 服务端「最大连接」默认值，与 Qt 版一致 */
+export const TCP_DEFAULT_MAX_CLIENTS = "5";
+
+/** 最大连接数的硬上限：再多也只是把 accept 队列塞满 */
+export const TCP_MAX_CLIENTS = 128;
+
+/* ---------- UDP 通信 ---------- */
+
+/** 一个数据报；from 是来源 `地址:端口`，UDP 没有连接，界面靠它区分对端 */
+export interface UdpChunk {
+  /** 收到时刻（Unix 毫秒） */
+  ts: number;
+  len: number;
+  /** 大写十六进制，空格分隔 */
+  hex: string;
+  /** UTF-8 lossy 文本 */
+  text: string;
+  from: string;
+}
+
+export interface UdpStatus {
+  state: "open" | "error";
+  /** 实际绑定到的 `地址:端口`：本地端口填 0 时才是系统分到的端口 */
+  local: string | null;
+  message: string | null;
+}
+
+/** 发送回执：to 是实际发往的 `地址:端口`（回复模式下由后端挑） */
+export interface UdpSent {
+  len: number;
+  hex: string;
+  text: string;
+  to: string;
+}
+
+export const UDP_DEFAULT_LOCAL_HOST = "0.0.0.0";
+export const UDP_DEFAULT_PORT = "8001";
+export const UDP_DEFAULT_REMOTE_HOST = "127.0.0.1";
+export const UDP_DEFAULT_GROUP = "224.1.1.1";

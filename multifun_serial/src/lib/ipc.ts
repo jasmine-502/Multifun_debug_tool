@@ -20,6 +20,13 @@ import type {
   PortInfo,
   SplitMode,
   Stats,
+  TcpChunk,
+  TcpPeerEvent,
+  TcpSent,
+  TcpStatus,
+  UdpChunk,
+  UdpSent,
+  UdpStatus,
 } from "./types";
 
 export const EVT_LOG_BATCH = "esp://log-batch";
@@ -29,6 +36,11 @@ export const EVT_PORTS = "esp://ports";
 export const EVT_AUTOSAVE = "esp://autosave";
 export const EVT_FLASH_LOG = "esp://flash/log";
 export const EVT_FLASH_PROGRESS = "esp://flash/progress";
+export const EVT_TCP_DATA = "tcp://data";
+export const EVT_TCP_STATUS = "tcp://status";
+export const EVT_TCP_PEER = "tcp://peer";
+export const EVT_UDP_DATA = "udp://data";
+export const EVT_UDP_STATUS = "udp://status";
 
 export type Unlisten = UnlistenFn;
 
@@ -115,4 +127,53 @@ export const tauri = {
 
   onFlashProgress: (cb: (p: FlashProgressPayload) => void) =>
     listen<FlashProgressPayload>(EVT_FLASH_PROGRESS, (e) => cb(e.payload)),
+
+  /* ---------- TCP 客户端 / 服务端 ---------- */
+
+  /** 连上后返回 `地址:端口`，连接超时 2 秒 */
+  tcpConnect: (host: string, port: number) =>
+    invoke<string>("tcp_connect", { host, port }),
+
+  /** 开始监听，返回实际监听地址（`0.0.0.0:8000`） */
+  tcpListen: (host: string, port: number, maxClients: number) =>
+    invoke<string>("tcp_listen", { host, port, maxClients }),
+
+  tcpDisconnect: () => invoke<void>("tcp_disconnect"),
+
+  /** hex 为 true 时 `data` 按十六进制文本解析；返回实际发出的字节 */
+  tcpSend: (data: string, hex: boolean) => invoke<TcpSent>("tcp_send", { data, hex }),
+
+  onTcpData: (cb: (chunk: TcpChunk) => void) =>
+    listen<TcpChunk>(EVT_TCP_DATA, (e) => cb(e.payload)),
+
+  onTcpStatus: (cb: (status: TcpStatus) => void) =>
+    listen<TcpStatus>(EVT_TCP_STATUS, (e) => cb(e.payload)),
+
+  /** 服务端在线客户端变化：连接 / 断开 / 被拒绝 */
+  onTcpPeer: (cb: (event: TcpPeerEvent) => void) =>
+    listen<TcpPeerEvent>(EVT_TCP_PEER, (e) => cb(e.payload)),
+
+  /* ---------- UDP 通信 ---------- */
+
+  /** 绑定本地端口，返回实际绑上的 `地址:端口`（本地端口 0 时由系统分配） */
+  udpStart: (
+    localHost: string,
+    localPort: number,
+    broadcast: boolean,
+    multicast: boolean,
+    group: string,
+  ) =>
+    invoke<string>("udp_start", { localHost, localPort, broadcast, multicast, group }),
+
+  udpStop: () => invoke<void>("udp_stop"),
+
+  /** `host` 为空表示服务端模式：回给最近一次收到报文的来源 */
+  udpSend: (data: string, hex: boolean, host: string, port: number) =>
+    invoke<UdpSent>("udp_send", { data, hex, host, port }),
+
+  onUdpData: (cb: (chunk: UdpChunk) => void) =>
+    listen<UdpChunk>(EVT_UDP_DATA, (e) => cb(e.payload)),
+
+  onUdpStatus: (cb: (status: UdpStatus) => void) =>
+    listen<UdpStatus>(EVT_UDP_STATUS, (e) => cb(e.payload)),
 };

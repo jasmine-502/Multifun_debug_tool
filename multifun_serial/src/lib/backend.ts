@@ -24,6 +24,13 @@ import type {
   PortInfo,
   SplitMode,
   Stats,
+  TcpChunk,
+  TcpPeerEvent,
+  TcpSent,
+  TcpStatus,
+  UdpChunk,
+  UdpSent,
+  UdpStatus,
 } from "./types";
 
 export const isTauriRuntime = (): boolean =>
@@ -98,6 +105,36 @@ export interface Backend {
   onFlashProgress(cb: (p: FlashProgressPayload) => void): Promise<Unlisten>;
   /** 擦除前的二次确认（真机走系统对话框）*/
   confirmErase(): Promise<boolean>;
+
+  /* ---------- TCP 客户端 / 服务端 ---------- */
+
+  /** 连接服务器，返回 `地址:端口`；连接超时 2 秒 */
+  tcpConnect(host: string, port: number): Promise<string>;
+  /** 开始监听，返回实际监听地址；`0.0.0.0` 表示所有网卡 */
+  tcpListen(host: string, port: number, maxClients: number): Promise<string>;
+  tcpDisconnect(): Promise<void>;
+  /** hex 为 true 时 data 按十六进制文本解析；返回实际发出的字节与目标数 */
+  tcpSend(data: string, hex: boolean): Promise<TcpSent>;
+  onTcpData(cb: (chunk: TcpChunk) => void): Promise<Unlisten>;
+  onTcpStatus(cb: (status: TcpStatus) => void): Promise<Unlisten>;
+  /** 服务端在线客户端变化：连接 / 断开 / 被拒绝 */
+  onTcpPeer(cb: (event: TcpPeerEvent) => void): Promise<Unlisten>;
+
+  /* ---------- UDP 通信 ---------- */
+
+  /** 绑定本地端口，返回实际绑上的 `地址:端口`；本地端口 0 表示由系统分配 */
+  udpStart(
+    localHost: string,
+    localPort: number,
+    broadcast: boolean,
+    multicast: boolean,
+    group: string,
+  ): Promise<string>;
+  udpStop(): Promise<void>;
+  /** hex 为 true 时 data 按十六进制文本解析；`host` 为空表示回给最近来源 */
+  udpSend(data: string, hex: boolean, host: string, port: number): Promise<UdpSent>;
+  onUdpData(cb: (chunk: UdpChunk) => void): Promise<Unlisten>;
+  onUdpStatus(cb: (status: UdpStatus) => void): Promise<Unlisten>;
 }
 
 /* ---------------- 真实实现 ---------------- */
@@ -138,6 +175,16 @@ const realBackend: Backend = {
     } catch {
       /* 串口可能已经拔掉，收尾失败无关紧要 */
     }
+    try {
+      await tauri.tcpDisconnect();
+    } catch {
+      /* 同上：TCP 可能已经断了 */
+    }
+    try {
+      await tauri.udpStop();
+    } catch {
+      /* UDP 没启动时停止是空操作，不必报错 */
+    }
   },
   onLogBatch: (cb) => tauri.onLogBatch(cb),
   onStats: (cb) => tauri.onStats(cb),
@@ -170,6 +217,19 @@ const realBackend: Backend = {
       kind: "warning",
     });
   },
+  tcpConnect: (host, port) => tauri.tcpConnect(host, port),
+  tcpListen: (host, port, maxClients) => tauri.tcpListen(host, port, maxClients),
+  tcpDisconnect: () => tauri.tcpDisconnect(),
+  tcpSend: (data, hex) => tauri.tcpSend(data, hex),
+  onTcpData: (cb) => tauri.onTcpData(cb),
+  onTcpStatus: (cb) => tauri.onTcpStatus(cb),
+  onTcpPeer: (cb) => tauri.onTcpPeer(cb),
+  udpStart: (localHost, localPort, broadcast, multicast, group) =>
+    tauri.udpStart(localHost, localPort, broadcast, multicast, group),
+  udpStop: () => tauri.udpStop(),
+  udpSend: (data, hex, host, port) => tauri.udpSend(data, hex, host, port),
+  onUdpData: (cb) => tauri.onUdpData(cb),
+  onUdpStatus: (cb) => tauri.onUdpStatus(cb),
 };
 
 /* ---------------- 浏览器模拟实现 ---------------- */
@@ -208,6 +268,27 @@ const mockHex = (text: string): string =>
   Array.from(new TextEncoder().encode(text), (byte) =>
     byte.toString(16).padStart(2, "0").toUpperCase(),
   ).join(" ");
+
+/** 一次发送的字节表示（TCP 的广播目标数、UDP 的来源都在外面补） */
+type MockPayload = Omit<TcpSent, "targets">;
+
+/** 模拟发送：把输入框内容还原成字节，规则与 Rust 侧 parse_send_payload 一致 */
+const mockPayloadOf = (data: string, hex: boolean): MockPayload => {
+  if (!hex) {
+    const bytes = Array.from(new TextEncoder().encode(data));
+    return { len: bytes.length, hex: mockHex(data), text: data };
+  }
+  const raw = data.replace(/[\s,]/g, "");
+  if (!/^[0-9a-fA-F]*$/.test(raw)) throw new Error("HEX 数据包含非法字符");
+  if (raw.length % 2 !== 0) throw new Error("HEX 数据长度不是偶数（每字节需要两位十六进制）");
+  const bytes: number[] = [];
+  for (let i = 0; i < raw.length; i += 2) bytes.push(parseInt(raw.slice(i, i + 2), 16));
+  return {
+    len: bytes.length,
+    hex: bytes.map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join(" "),
+    text: bytes.map((byte) => String.fromCharCode(byte)).join(""),
+  };
+};
 
 const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
@@ -272,6 +353,11 @@ const mockListeners = {
   autosave: new Set<(s: AutosaveStatus) => void>(),
   flashLog: new Set<(line: FlashLogLine) => void>(),
   flashProgress: new Set<(p: FlashProgressPayload) => void>(),
+  tcpData: new Set<(chunk: TcpChunk) => void>(),
+  tcpStatus: new Set<(s: TcpStatus) => void>(),
+  tcpPeer: new Set<(e: TcpPeerEvent) => void>(),
+  udpData: new Set<(chunk: UdpChunk) => void>(),
+  udpStatus: new Set<(s: UdpStatus) => void>(),
 };
 
 const MOCK_PORTS: PortInfo[] = [
@@ -348,6 +434,60 @@ const startMockStream = () => {
   }, 1000);
 };
 
+/** 模拟服务器主动发的报文：带行尾、有中文，方便验证 HEX 与时间戳 */
+const TCP_MOCK_REPLIES = [
+  "ACK: ok",
+  "温度 23.5℃ 湿度 48.2%",
+  "{\"type\":\"status\",\"rssi\":-62}",
+  "ERR: timeout on channel 2",
+];
+
+/** 模拟服务端接入的客户端：固定几个地址，方便验证「来自 x:port」与广播目标数 */
+const TCP_MOCK_CLIENTS = ["192.168.1.50:51234", "192.168.1.91:52100"];
+
+let mockTcpConnected = false;
+/** 当前链路是不是服务端：决定 tcpSend 是广播还是单发 */
+let mockTcpServer = false;
+/** 服务端在线客户端：模拟模式下不变化，启动时按最大连接数填几个 */
+let mockTcpPeers: string[] = [];
+let mockTcpTimer: number | null = null;
+let mockTcpSeq = 0;
+
+const stopMockTcp = () => {
+  if (mockTcpTimer !== null) {
+    window.clearInterval(mockTcpTimer);
+    mockTcpTimer = null;
+  }
+  mockTcpConnected = false;
+  mockTcpServer = false;
+  mockTcpPeers = [];
+};
+
+/** 模拟 UDP 来源：固定几个地址，方便验证界面上「来自 x.x.x.x:port」前缀 */
+const UDP_MOCK_PEERS = ["192.168.1.42:5000", "192.168.1.77:9000", "10.0.0.8:12000"];
+
+const UDP_MOCK_REPLIES = [
+  "ACK: ok",
+  "温度 23.5℃ 湿度 48.2%",
+  '{"type":"status","rssi":-62}',
+  "ERR: timeout on channel 2",
+];
+
+let mockUdpRunning = false;
+let mockUdpTimer: number | null = null;
+let mockUdpSeq = 0;
+let mockUdpLastPeer = UDP_MOCK_PEERS[0];
+/** 是否真的收到过报文：服务端模式没收到过就不该能回复，与 Rust 侧一致 */
+let mockUdpSeenPeer = false;
+
+const stopMockUdp = () => {
+  if (mockUdpTimer !== null) {
+    window.clearInterval(mockUdpTimer);
+    mockUdpTimer = null;
+  }
+  mockUdpRunning = false;
+};
+
 const mockBackend: Backend = {
   mock: true,
   listPorts: async () => MOCK_PORTS,
@@ -404,6 +544,8 @@ const mockBackend: Backend = {
   },
   async shutdown() {
     stopMockStream();
+    stopMockTcp();
+    stopMockUdp();
     mockAutosave = false;
     mockListeners.status.forEach((cb) => cb({ state: "closed", port: null, message: null }));
   },
@@ -558,6 +700,133 @@ const mockBackend: Backend = {
   async confirmErase() {
     return window.confirm("确定要擦除Flash吗？此操作将清除所有数据！");
   },
+  async tcpConnect(host, port) {
+    const target = host.trim();
+    if (!target || !Number.isFinite(port) || port <= 0) {
+      throw new Error("请输入有效的服务器地址与端口");
+    }
+    stopMockTcp();
+    await mockDelay(320);
+    // 端口 1 专门用来演示超时分支，其余端口一律连得上
+    if (port === 1) throw new Error(`连接超时：请检查网络并确认 ${target}:${port} 是否在监听`);
+    mockTcpConnected = true;
+    const remote = `${target}:${port}`;
+    mockListeners.tcpStatus.forEach((cb) => cb({ state: "open", remote, message: null }));
+    mockTcpTimer = window.setInterval(() => {
+      mockTcpSeq += 1;
+      const text = `${pick(TCP_MOCK_REPLIES)} #${mockTcpSeq}\n`;
+      const bytes = new TextEncoder().encode(text);
+      mockListeners.tcpData.forEach((cb) =>
+        cb({ ts: Date.now(), len: bytes.length, hex: mockHex(text), text, from: null }),
+      );
+    }, 1500);
+    return remote;
+  },
+  async tcpListen(host, port, maxClients) {
+    const target = host.trim();
+    if (!target || !Number.isFinite(port) || port <= 0) {
+      throw new Error("请输入有效的监听地址与端口");
+    }
+    stopMockTcp();
+    await mockDelay(260);
+    // 端口 1 借用客户端的超时开关演示「端口已被占用」
+    if (port === 1) throw new Error(`${target}:${port} 已被占用，请换一个监听端口`);
+    mockTcpConnected = true;
+    mockTcpServer = true;
+    const local = `${target}:${port}`;
+    mockListeners.tcpStatus.forEach((cb) => cb({ state: "open", remote: local, message: null }));
+
+    // 按「最大连接」提前接入几个客户端，方便验证广播与在线数
+    const limit = Number.isFinite(maxClients) && maxClients > 0 ? maxClients : 1;
+    mockTcpPeers = TCP_MOCK_CLIENTS.slice(0, Math.min(limit, TCP_MOCK_CLIENTS.length));
+    mockTcpPeers.forEach((peer, index) =>
+      mockListeners.tcpPeer.forEach((cb) =>
+        cb({ kind: "connected", peer, count: index + 1 }),
+      ),
+    );
+    mockTcpTimer = window.setInterval(() => {
+      mockTcpSeq += 1;
+      const text = `${pick(TCP_MOCK_REPLIES)} #${mockTcpSeq}\n`;
+      const bytes = new TextEncoder().encode(text);
+      const from = pick(mockTcpPeers);
+      mockListeners.tcpData.forEach((cb) =>
+        cb({ ts: Date.now(), len: bytes.length, hex: mockHex(text), text, from }),
+      );
+    }, 1500);
+    return local;
+  },
+  async tcpDisconnect() {
+    // 与 Rust 侧一致：主动断开不再补发 closed 状态，避免界面重复记一条
+    stopMockTcp();
+  },
+  async tcpSend(data, hex) {
+    if (!mockTcpConnected) throw new Error("尚未连接，无法发送");
+    const sent = mockPayloadOf(data, hex);
+    if (sent.len === 0) throw new Error("发送内容不能为空");
+    await mockDelay(120);
+    if (!mockTcpConnected) throw new Error("连接已断开");
+    if (mockTcpServer) {
+      // 服务端：没人接入/全掉线时与 Rust 侧同一句报错；广播成功不回显字节
+      if (mockTcpPeers.length === 0) throw new Error("还没有客户端连接，无法发送");
+      return { ...sent, targets: mockTcpPeers.length };
+    }
+    // 像回环服务器一样把发出的字节原样推回，方便验证收发通路
+    mockListeners.tcpData.forEach((cb) =>
+      cb({ ts: Date.now(), len: sent.len, hex: sent.hex, text: sent.text, from: null }),
+    );
+    return { ...sent, targets: 1 };
+  },
+  onTcpData: (cb) => subscribe(mockListeners.tcpData, cb),
+  onTcpStatus: (cb) => subscribe(mockListeners.tcpStatus, cb),
+  onTcpPeer: (cb) => subscribe(mockListeners.tcpPeer, cb),
+  async udpStart(localHost, localPort, _broadcast, multicast, group) {
+    if (!Number.isInteger(localPort) || localPort < 0 || localPort > 65535) {
+      throw new Error("请输入有效的本地端口（0 表示由系统分配）");
+    }
+    if (multicast && !group.trim()) throw new Error("请输入组播地址");
+    stopMockUdp();
+    await mockDelay(200);
+    mockUdpRunning = true;
+    // 与真机同口径：本地端口 0 交给系统分配，返回值才是实际端口
+    const bound = localPort === 0 ? 49152 + Math.floor(Math.random() * 1000) : localPort;
+    const local = `${localHost.trim() || "0.0.0.0"}:${bound}`;
+    mockUdpSeenPeer = false;
+    mockListeners.udpStatus.forEach((cb) => cb({ state: "open", local, message: null }));
+    mockUdpTimer = window.setInterval(() => {
+      mockUdpSeq += 1;
+      mockUdpLastPeer = pick(UDP_MOCK_PEERS);
+      mockUdpSeenPeer = true;
+      const text = `${pick(UDP_MOCK_REPLIES)} #${mockUdpSeq}\n`;
+      const bytes = new TextEncoder().encode(text);
+      mockListeners.udpData.forEach((cb) =>
+        cb({ ts: Date.now(), len: bytes.length, hex: mockHex(text), text, from: mockUdpLastPeer }),
+      );
+    }, 1500);
+    return local;
+  },
+  async udpStop() {
+    // 与 Rust 侧一致：主动停止不再补发状态，避免界面重复记一条
+    stopMockUdp();
+  },
+  async udpSend(data, hex, host, port) {
+    if (!mockUdpRunning) throw new Error("尚未启动，无法发送");
+    const sent = mockPayloadOf(data, hex);
+    if (sent.len === 0) throw new Error("发送内容不能为空");
+    await mockDelay(80);
+    if (!mockUdpRunning) throw new Error("UDP 已停止");
+    // host 为空 = 服务端模式：回给最近来源，与 Rust 侧一致
+    if (!host.trim() && !mockUdpSeenPeer) {
+      throw new Error("还没收到过报文，无法确定回复目标");
+    }
+    const to = host.trim() ? `${host.trim()}:${port}` : mockUdpLastPeer;
+    // 像回环服务器一样把发出的字节原样推回，方便验证收发通路
+    mockListeners.udpData.forEach((cb) =>
+      cb({ ts: Date.now(), len: sent.len, hex: sent.hex, text: sent.text, from: to }),
+    );
+    return { ...sent, to };
+  },
+  onUdpData: (cb) => subscribe(mockListeners.udpData, cb),
+  onUdpStatus: (cb) => subscribe(mockListeners.udpStatus, cb),
 };
 
 export const backend: Backend = isTauriRuntime() ? realBackend : mockBackend;

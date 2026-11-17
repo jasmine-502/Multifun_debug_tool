@@ -7,6 +7,9 @@ use std::thread::JoinHandle;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::tcp_client::TcpLink;
+use crate::udp_socket::UdpSession;
+
 /// 过滤条件：级别开关 + 日志名称白名单（逗号分隔，精确匹配，与 Qt 版一致）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Filters {
@@ -146,6 +149,10 @@ pub struct AppState {
     pub filters: Arc<Mutex<Filters>>,
     pub autosave: Arc<Mutex<AutosaveControl>>,
     pub blacklist: Arc<Mutex<Vec<String>>>,
+    /// TCP 链路：同一时刻只有一条（客户端连出去 / 服务端听进来，与 Qt 版一致）
+    pub tcp: Mutex<Option<TcpLink>>,
+    /// UDP socket：绑定期间一直存在，停止即释放端口
+    pub udp: Mutex<Option<UdpSession>>,
 }
 
 impl Default for AppState {
@@ -155,6 +162,8 @@ impl Default for AppState {
             filters: Arc::new(Mutex::new(Filters::default())),
             autosave: Arc::new(Mutex::new(AutosaveControl::default())),
             blacklist: Arc::new(Mutex::new(Vec::new())),
+            tcp: Mutex::new(None),
+            udp: Mutex::new(None),
         }
     }
 }

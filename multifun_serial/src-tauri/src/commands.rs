@@ -10,6 +10,8 @@ use crate::firmware_merge;
 use crate::ports::{self, PortInfo};
 use crate::serial_reader::{self, AutosaveStatus, OpenRequest, SplitMode};
 use crate::state::{AppState, Session};
+use crate::tcp_client::{self, TcpLink, TcpSent, TcpStatus, EVT_TCP_STATUS};
+use crate::udp_socket::{self, UdpSent, UdpStatus, EVT_UDP_STATUS};
 
 /// 默认日志目录：exe 同级的 `logs/`，与 PySide6 版打包后的行为一致
 pub fn default_log_dir_path() -> PathBuf {
@@ -320,4 +322,229 @@ pub async fn esp_detect(
 ) -> Result<esp_flash::ChipInfo, String> {
     ensure_serial_free(&state)?;
     run_blocking(move || esp_flash::detect(&app, &port, baud, &chip)).await
+}
+
+/* ---------------- TCP 客户端 / 服务端 ---------------- */
+
+/// 收掉 TCP 链路：关窗、点断开、发送失败后共用同一个入口，避免三处各写一遍
+pub fn stop_tcp(state: &AppState) {
+    if let Some(mut link) = state.tcp.lock().take() {
+        link.stop();
+    }
+}
+
+/// 连接服务器。连接超时 2 秒，跑在阻塞线程池里，不占主线程
+#[tauri::command]
+pub async fn tcp_connect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host: String,
+    port: u16,
+) -> Result<String, String> {
+    // 重复点连接时先收掉旧连接，否则旧读线程会继续往界面上推数据
+    stop_tcp(&state);
+
+    let handle = app.clone();
+    let (session, remote) = run_blocking(move || {
+        tcp_client::connect(handle, &host, port).map(|session| {
+            let remote = session.remote().to_string();
+            (session, remote)
+        })
+    })
+    .await?;
+
+    *state.tcp.lock() = Some(TcpLink::Client(session));
+    let _ = app.emit(
+        EVT_TCP_STATUS,
+        TcpStatus {
+            state: "open",
+            remote: Some(remote.clone()),
+            message: None,
+        },
+    );
+    Ok(remote)
+}
+
+#[tauri::command]
+pub async fn tcp_disconnect(state: State<'_, AppState>) -> Result<(), String> {
+    // 服务端要等 N 条读线程退出，别让同步命令把主线程按住
+    let Some(mut link) = state.tcp.lock().take() else {
+        return Ok(());
+    };
+    run_blocking(move || {
+        link.stop();
+        Ok(())
+    })
+    .await
+}
+
+/// 开始监听。与连接一样跑在阻塞线程池里，返回实际监听地址
+#[tauri::command]
+pub async fn tcp_listen(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host: String,
+    port: u16,
+    max_clients: u16,
+) -> Result<String, String> {
+    // 重复点启动时先收掉旧链路，否则旧 accept 线程会继续收客户端
+    stop_tcp(&state);
+
+    let handle = app.clone();
+    let (server, local) = run_blocking(move || {
+        tcp_client::listen(handle, &host, port, max_clients as usize).map(|server| {
+            let local = server.local().to_string();
+            (server, local)
+        })
+    })
+    .await?;
+
+    *state.tcp.lock() = Some(TcpLink::Server(server));
+    let _ = app.emit(
+        EVT_TCP_STATUS,
+        TcpStatus {
+            state: "open",
+            remote: Some(local.clone()),
+            message: None,
+        },
+    );
+    Ok(local)
+}
+
+/// 发送一包。客户端发给服务器，服务端广播给所有在线客户端
+#[tauri::command]
+pub async fn tcp_send(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    data: String,
+    hex: bool,
+) -> Result<TcpSent, String> {
+    let bytes = tcp_client::parse_send_payload(&data, hex)?;
+    if bytes.is_empty() {
+        return Err("发送内容不能为空".to_string());
+    }
+    // 先把回执要用的字节表示备好：bytes 一旦 move 进闭包就拿不回来了
+    let len = bytes.len();
+    let hex = tcp_client::hex_of(&bytes);
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+
+    // 发送目标先取出来再 await：MutexGuard 不能跨越 await 点
+    let (target, is_client, endpoint) = {
+        let guard = state.tcp.lock();
+        let link = guard
+            .as_ref()
+            .ok_or_else(|| "尚未连接，无法发送".to_string())?;
+        (link.send_target(), link.is_client(), link.endpoint().to_string())
+    };
+
+    match run_blocking(move || target.send(&bytes)).await {
+        Ok(targets) => Ok(TcpSent {
+            len,
+            hex,
+            text,
+            targets,
+        }),
+        Err(err) => {
+            // 客户端写失败说明这条连接已经半包上线、不可信，必须收掉；
+            // 服务端只是某个客户端掉了，监听本身没问题，别因为一次广播失败把服务停掉
+            if is_client {
+                stop_tcp(&state);
+                let _ = app.emit(
+                    EVT_TCP_STATUS,
+                    TcpStatus {
+                        state: "error",
+                        remote: Some(endpoint),
+                        message: Some(err.clone()),
+                    },
+                );
+            }
+            Err(err)
+        }
+    }
+}
+
+/* ---------------- UDP 通信 ---------------- */
+
+/// 收掉 UDP socket：关窗、点停止、接收线程出错后共用同一个入口
+pub fn stop_udp(state: &AppState) {
+    if let Some(mut session) = state.udp.lock().take() {
+        session.stop();
+    }
+}
+
+/// 绑定本地端口开始收发。bind 和 join 组播都是瞬间完成的操作，不必进阻塞线程池
+#[tauri::command]
+pub fn udp_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    local_host: String,
+    local_port: u16,
+    broadcast: bool,
+    multicast: bool,
+    group: String,
+) -> Result<String, String> {
+    // 重复点启动时先收掉旧 socket，否则旧读线程会继续把数据推到界面上
+    stop_udp(&state);
+
+    let session = udp_socket::start(
+        app.clone(),
+        &local_host,
+        local_port,
+        broadcast,
+        multicast,
+        &group,
+    )?;
+    let local = session.local().to_string();
+    *state.udp.lock() = Some(session);
+    let _ = app.emit(
+        EVT_UDP_STATUS,
+        UdpStatus {
+            state: "open",
+            local: Some(local.clone()),
+            message: None,
+        },
+    );
+    Ok(local)
+}
+
+#[tauri::command]
+pub fn udp_stop(state: State<'_, AppState>) {
+    stop_udp(&state);
+}
+
+/// 发送一包。`host` 为空表示服务端模式：由后端回给最近一次收到报文的来源
+#[tauri::command]
+pub async fn udp_send(
+    state: State<'_, AppState>,
+    data: String,
+    hex: bool,
+    host: String,
+    port: u16,
+) -> Result<UdpSent, String> {
+    let bytes = udp_socket::parse_send_payload(&data, hex)?;
+    if bytes.is_empty() {
+        return Err("发送内容不能为空".to_string());
+    }
+
+    // socket 先取出来再 await：MutexGuard 不能跨越 await 点
+    let (socket, last_peer) = {
+        let guard = state.udp.lock();
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| "尚未启动，无法发送".to_string())?;
+        (session.socket(), session.last_peer())
+    };
+
+    // 先把回执要用的字节表示备好：bytes 一旦 move 进闭包就拿不回来了
+    let len = bytes.len();
+    let hex = udp_socket::hex_of(&bytes);
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+
+    let to = run_blocking(move || udp_socket::send(&socket, &last_peer, &bytes, &host, port)).await?;
+    Ok(UdpSent {
+        len,
+        hex,
+        text,
+        to,
+    })
 }

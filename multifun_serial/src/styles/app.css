@@ -1816,6 +1816,246 @@ select:focus-visible {
   color: var(--term-ts);
 }
 
+/* ==== TCP / UDP 通信 ================================================== */
+
+/* 两行配置：协议/模式/启停在第一行，协议相关地址从第二行起 */
+.comm-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.comm-config__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* 连接条在上，下面左发送右终端：和 Qt 版的 splitter 布局一致 */
+.comm-main {
+  display: flex;
+  gap: var(--space-4);
+  flex: 1;
+  min-height: 0;
+}
+
+.comm-send {
+  flex: 0 0 380px;
+  width: 380px;
+  min-width: 0;
+}
+
+/* 窗口不够高时发送区自己滚，不能把 5 行裁掉 */
+.comm-send .card__body {
+  overflow: auto;
+}
+
+.comm-terminal {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 协议与模式两个下拉定宽：切换它们时启停按钮和状态灯不会左右跳 */
+.comm-config__proto,
+.comm-config__mode {
+  width: 104px;
+  min-width: 104px;
+}
+
+/* 地址/端口定宽：输入长短不影响后面的控件位置 */
+.comm-config__host {
+  width: 160px;
+  min-width: 160px;
+}
+
+.comm-config__port {
+  width: 96px;
+  min-width: 96px;
+}
+
+.comm-config__max {
+  width: 84px;
+  min-width: 84px;
+}
+
+.comm-config__group {
+  width: 130px;
+  min-width: 130px;
+}
+
+.comm-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.comm-link--starting {
+  color: var(--accent);
+}
+
+.comm-link--open {
+  color: var(--success);
+}
+
+.comm-link--error {
+  color: var(--danger);
+}
+
+/* 发送区：5 行两段式，一行数据 + 一行参数，窄列也能放下全部控件 */
+.comm-send__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.comm-send__row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.comm-send__row:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.comm-send__line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.comm-send__no {
+  flex: 0 0 auto;
+  width: 22px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-faint);
+}
+
+/* 发送行比表单默认高度矮一号，5 行才放得下 */
+.comm-send .input,
+.comm-send .select {
+  min-height: var(--control-height-sm);
+  font-size: var(--font-size-sm);
+}
+
+.comm-send__data {
+  flex: 1;
+  min-width: 0;
+}
+
+.comm-send__caption {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.comm-send__interval {
+  width: 78px;
+  min-width: 78px;
+}
+
+.comm-send__format {
+  min-width: 86px;
+  max-width: 86px;
+  padding-right: var(--space-5);
+  font-size: var(--font-size-sm);
+}
+
+/* 接收终端：与日志页同一套 VS Code 配色 */
+.comm-log {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-3) var(--space-4);
+  overflow: auto;
+  background: var(--term-bg);
+  border: 1px solid var(--term-border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  scrollbar-color: #3b4454 transparent;
+}
+
+.comm-log__row {
+  display: flex;
+  gap: var(--space-2);
+  color: var(--term-fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 方向配色沿用 Qt 版：接收绿、发送蓝、提示黄、错误红 */
+.comm-log__row--rx {
+  color: var(--lv-info);
+}
+
+.comm-log__row--tx {
+  color: var(--lv-debug);
+}
+
+.comm-log__row--warn {
+  color: var(--lv-warning);
+}
+
+.comm-log__row--error {
+  color: var(--lv-error);
+}
+
+.comm-log__ts {
+  flex: 0 0 auto;
+  color: var(--term-ts);
+}
+
+.comm-log__text {
+  min-width: 0;
+}
+
+/* 醒目匹配：与 Qt 版一致，只改字色加粗，不铺底色 */
+.comm-log__hit {
+  background: transparent;
+  color: var(--lv-error);
+  font-weight: var(--font-weight-semibold);
+}
+
+.comm-log__empty {
+  margin: 0;
+  color: var(--term-ts);
+}
+
+.comm-highlight {
+  width: 140px;
+  min-width: 140px;
+  min-height: var(--control-height-sm);
+  font-size: var(--font-size-sm);
+}
+
+/* 窄窗口改成上下堆叠，终端保留一段可用高度 */
+@media (max-width: 1120px) {
+  .comm-main {
+    flex-direction: column;
+  }
+
+  .comm-send {
+    flex: 0 0 auto;
+    width: auto;
+  }
+
+  .comm-terminal {
+    min-height: 320px;
+  }
+}
+
 /* ==== 响应式 ========================================================== */
 
 @media (max-width: 1180px) {

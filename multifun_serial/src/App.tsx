@@ -6,18 +6,18 @@ import {
   Radio,
   Sun,
   Terminal,
-  Waves,
   Zap,
 } from "lucide-react";
 import EspFlashPage from "./features/esp-flash/EspFlashPage";
 import EspLogPage from "./features/esp-log/EspLogPage";
 import FirmwareMergePage from "./features/firmware-merge/FirmwareMergePage";
+import CommPage from "./features/net/CommPage";
 // 版本号只有 tauri.conf.json 一个真相源：MSI 的 ProductVersion 和侧栏显示都读它，
 // CI 打标签时会改写这个文件，所以两边不会对不上
 import tauriConfig from "../src-tauri/tauri.conf.json";
 import { backend } from "./lib/backend";
 
-type ViewId = "esp-log" | "tcp" | "udp" | "flash" | "merge";
+type ViewId = "esp-log" | "tcp" | "flash" | "merge";
 
 interface NavItem {
   id: ViewId;
@@ -28,8 +28,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: "esp-log", label: "ESP32 日志", icon: Radio, ready: true },
-  { id: "tcp", label: "TCP 客户端", icon: Network, ready: false },
-  { id: "udp", label: "UDP 通信", icon: Waves, ready: false },
+  { id: "tcp", label: "TCP/UDP 通信", icon: Network, ready: true },
   { id: "flash", label: "ESP32 烧录", icon: Zap, ready: true },
   { id: "merge", label: "固件合并", icon: Layers, ready: true },
 ];
@@ -130,7 +129,12 @@ export default function App() {
         <div className="view-host" style={{ display: view === "flash" ? undefined : "none" }}>
           <EspFlashPage />
         </div>
-        {view !== "esp-log" && view !== "merge" && view !== "flash" && (
+        {/* 通信页必须常驻：连接/监听状态、收发记录、5 行发送配置和协议选择切页后都要原样保留 */}
+        <div className="view-host" style={{ display: view === "tcp" ? undefined : "none" }}>
+          <CommPage />
+        </div>
+        {/* 其余 tab 都已迁移，占位分支留给以后新增的页面 */}
+        {view !== "esp-log" && view !== "merge" && view !== "flash" && view !== "tcp" && (
           <Placeholder label={current.label} />
         )}
       </main>
